@@ -1,58 +1,61 @@
-# TokenScope 🔍
+# TokenScope
 
-**TokenScope**는 Claude Code 세션 로그를 정밀 분석하여 LLM 토큰 사용량을 모니터링하고, 비용 최적화 방안을 제시하는 Tauri 기반의 데스크탑 애플리케이션입니다.
+TokenScope는 Claude, Gemini, Codex 세션 로그를 로컬에서 분석해 사용자가 AI에게 일을 잘 맡기고 있는지 진단하는 데스크톱 앱입니다.
 
-## 🚀 주요 기능
+단순한 토큰 사용량 가계부가 아니라, 최근 세션을 근거로 "잘 쓰는 중 / 주의 / 낭비 심함"을 판정하고 다음 요청, 세션 분리, 상시 지침 파일 정리 방법을 제안합니다.
 
-- **토큰 사용량 대시보드:** 실시간으로 세션별 Input, Output, Cache 토큰 사용량을 시각화합니다.
-- **비용 추정:** 주요 모델 공급자(Anthropic, Google Gemini, OpenAI)의 가격 정책을 기반으로 예상 비용을 계산합니다.
-- **지능형 진단 (Diagnostic):** 컨텍스트 과부하, 캐시 효율 저하, 비정상적 토큰 낭비 패턴을 자동으로 탐지합니다.
-- **최적화 처방 (Prescription):** 분석된 데이터를 바탕으로 `CLAUDE.md` 수정 제안 등 토큰을 절약할 수 있는 구체적인 가이드를 제공합니다.
-- **세션 히스토리 관리:** 과거 대화 기록을 파싱하여 프로젝트별, 세션별 통계를 유지합니다.
+## 주요 기능
 
-## 🛠 기술 스택
+- **오늘의 판정:** 최근 5시간 세션을 기준으로 현재 AI 작업 방식의 건강 상태를 보여줍니다.
+- **낭비 근거:** 도구 실패, 반복 요청, 낮은 컨텍스트 밀도, 세션 범위 혼합, 설정 파일 과비대를 설명합니다.
+- **가장 큰 낭비 3개:** 예상 절약 토큰, 반복성, 바로 고칠 수 있는 정도를 기준으로 우선순위를 잡습니다.
+- **질문 가이드:** 나쁜 요청을 좋은 요청으로 바꾸는 예시와 작업 유형별 프롬프트 템플릿을 제공합니다.
+- **안전한 설정 파일 처방:** `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` diff, 예상 절약량, 신뢰도, 백업 경로, 복원 동선을 제공합니다.
 
-- **Frontend:** React, TypeScript, Vite, Tailwind CSS
-- **Backend:** Rust (Tauri)
-- **Data:** Claude Code JSON logs
-- **Analysis:** Tiktoken-based token estimation
+## 지원 대상
 
-## 📦 시작하기
+- Claude: `~/.claude/projects/**/*.jsonl`, `~/.claude/CLAUDE.md`
+- Gemini: `~/.gemini/tmp/**/*.json`, `~/.gemini/GEMINI.md`, `~/.config/gemini-cli/GEMINI.md`
+- Codex: `~/.codex/sessions/**/*.jsonl`, `~/.codex/AGENTS.md`
+
+## 진단하는 패턴
+
+- `CONTEXT_BLOAT`: 상시 지침 파일이 매 요청마다 너무 큰 비용을 유발합니다.
+- `RETRY_STORM`: 같은 요청이나 실패가 반복됩니다.
+- `TOOL_THRASH`: 같은 도구가 연속으로 실패합니다.
+- `SESSION_SCOPE_DRIFT`: 한 세션에 무관한 작업 흐름이 섞입니다.
+- `PHASE_MIXING`: 기획, 구현, 검증이 한 세션에서 과하게 이어집니다.
+
+## 시작하기
 
 ### 사전 준비
-- [Node.js](https://nodejs.org/) (v18+)
-- [Rust](https://www.rust-lang.org/) (latest stable)
-- [Yarn](https://yarnpkg.com/)
+
+- Node.js 18+
+- Rust stable
+- Yarn
 
 ### 설치 및 실행
-1. 저장소 클론 및 의존성 설치:
-   \`\`\`bash
-   yarn install
-   \`\`\`
 
-2. 개발 모드 실행:
-   \`\`\`bash
-   yarn tauri dev
-   \`\`\`
+```bash
+yarn install
+yarn tauri dev
+```
 
-3. 앱 빌드:
-   \`\`\`bash
-   yarn tauri build
-   \`\`\`
+### 빌드
 
-## 📂 프로젝트 구조
+```bash
+yarn build
+```
 
-- \`src/\`: React 프론트엔드 코드
-  - \`lib/parser.ts\`: 세션 로그 파싱 로직
-  - \`lib/analyzer.ts\`: 토큰 사용 패턴 분석기
-  - \`lib/prescriber.ts\`: 최적화 가이드 생성기
-- \`src-tauri/\`: Rust 기반 네이티브 설정 및 시스템 호출 처리
+## 프로젝트 구조
 
-## 🔐 보안 및 개인정보
+- `src/lib/parser.ts`: Claude, Gemini, Codex 로그 파싱과 메시지 정규화
+- `src/lib/analyzer.ts`: 낭비 패턴 감지, 건강 점수, 세션 요약 생성
+- `src/lib/prescriber.ts`: 설정 파일 처방, diff, 절약량 추정
+- `src/components/Dashboard.tsx`: 최근 5시간 판정과 대시보드
+- `src/components/FixPreview.tsx`: diff 미리보기, 적용, 안전 안내
+- `src-tauri/src/lib.rs`: 로컬 세션/설정 파일 검색, 읽기, 백업, 복원
 
-- 모든 분석은 로컬 환경에서 수행됩니다.
-- 세션 로그 및 파싱된 데이터는 외부 서버로 전송되지 않습니다.
+## 개인정보
 
-## 📄 라이선스
-
-MIT License.
+모든 분석은 로컬에서 수행됩니다. 세션 로그, 설정 파일, 분석 결과는 외부 서버로 전송되지 않습니다.

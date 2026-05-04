@@ -5,9 +5,9 @@ import { SummaryCard } from "./components/SummaryCard";
 import { FixPreview } from "./components/FixPreview";
 import { QuestionGuide } from "./components/QuestionGuide";
 import { Dashboard } from "./components/Dashboard";
-import { parseSession } from "./lib/parser";
+import { parseSession, isHumanVisibleMessage } from "./lib/parser";
 import { analyzeSession, DiagnosticResult } from "./lib/analyzer";
-import { prescribe, Fix } from "./lib/prescriber";
+import { prescribe, Fix, UsageWindowContext } from "./lib/prescriber";
 import { SessionFile, ReadResult } from "./lib/types";
 
 export default function App() {
@@ -21,11 +21,13 @@ export default function App() {
   const [fixes, setFixes] = useState<Fix[]>([]);
   const [claudeMd, setClaudeMd] = useState("");
   const [geminiMd, setGeminiMd] = useState("");
+  const [codexMd, setCodexMd] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState("summary");
 
   const [applying, setApplying] = useState(false);
   const [applyMsg, setApplyMsg] = useState<string | null>(null);
+  const [lastBackup, setLastBackup] = useState<{ path: string; provider: string } | null>(null);
 
   const initialLoadDone = useRef(false);
 
@@ -38,8 +40,10 @@ export default function App() {
 
         const cMd = await invoke<string>("read_claude_md").catch(() => "");
         const gMd = await invoke<string>("read_gemini_md").catch(() => "");
+        const xMd = await invoke<string>("read_codex_md").catch(() => "");
         setClaudeMd(cMd);
         setGeminiMd(gMd);
+        setCodexMd(xMd);
 
         if (!initialLoadDone.current && sessionList.length > 0) {
           initialLoadDone.current = true;
@@ -50,7 +54,7 @@ export default function App() {
             try {
               const res = await invoke<ReadResult>("read_session", { path: s.path });
               const parsed = parseSession(res.content, s.session_id, s.project, s.path);
-              const configMd = parsed.provider === "gemini" ? gMd : cMd;
+              const configMd = getConfigMd(parsed.provider, cMd, gMd, xMd);
               const diag = analyzeSession(parsed, configMd);
               results.set(s.path, diag);
             } catch (e) {
@@ -72,16 +76,18 @@ export default function App() {
     setDiagnostic(null);
     setFixes([]);
     setApplyMsg(null);
+    setLastBackup(null);
     setAnalyzing(true);
 
     try {
       const result = await invoke<ReadResult>("read_session", { path: session.path });
       // use parseSession for both .json and .jsonl
       const parsed = parseSession(result.content, session.session_id, session.project, session.path);
-      const currentConfigMd = parsed.provider === "gemini" ? geminiMd : claudeMd;
+      const currentConfigMd = getConfigMd(parsed.provider, claudeMd, geminiMd, codexMd);
       
       const diag = analyzeSession(parsed, currentConfigMd);
-      const fixList = prescribe(diag, currentConfigMd);
+      const usageWindow = buildUsageWindowContext(diag, diagnostics);
+      const fixList = prescribe(diag, currentConfigMd, usageWindow);
       
       setDiagnostic(diag);
       setFixes(fixList);
@@ -92,7 +98,7 @@ export default function App() {
     } finally {
       setAnalyzing(false);
     }
-  }, [claudeMd, geminiMd]);
+  }, [claudeMd, geminiMd, codexMd, diagnostics]);
 
   const handleApplyFix = useCallback(async (fix: Fix) => {
     if (fix.action.kind !== "edit_config_md") return;
@@ -109,24 +115,66 @@ export default function App() {
       });
       
       if (provider === "gemini") setGeminiMd(suggestedContent);
+      else if (provider === "codex") setCodexMd(suggestedContent);
       else setClaudeMd(suggestedContent);
 
       setApplyMsg(`저장 완료. 백업: ${backupPath}`);
+      setLastBackup({ path: backupPath, provider });
       
       // Re-analyze
       if (selected) {
         const result = await invoke<ReadResult>("read_session", { path: selected.path });
         const parsed = parseSession(result.content, selected.session_id, selected.project, selected.path);
         const diag = analyzeSession(parsed, suggestedContent);
+        const usageWindow = buildUsageWindowContext(diag, diagnostics);
         setDiagnostic(diag);
-        setFixes(prescribe(diag, suggestedContent));
+        setFixes(prescribe(diag, suggestedContent, usageWindow));
       }
     } catch (e) {
       setApplyMsg(`오류: ${String(e)}`);
     } finally {
       setApplying(false);
     }
-  }, [selected]);
+  }, [selected, diagnostics]);
+
+  const handleRestoreBackup = useCallback(async () => {
+    if (!lastBackup) return;
+
+    setApplying(true);
+    setApplyMsg(null);
+    try {
+      await invoke("restore_backup", {
+        backupPath: lastBackup.path,
+        provider: lastBackup.provider,
+      });
+
+      const restored = lastBackup.provider === "gemini"
+        ? await invoke<string>("read_gemini_md").catch(() => "")
+        : lastBackup.provider === "codex"
+        ? await invoke<string>("read_codex_md").catch(() => "")
+        : await invoke<string>("read_claude_md").catch(() => "");
+
+      if (lastBackup.provider === "gemini") setGeminiMd(restored);
+      else if (lastBackup.provider === "codex") setCodexMd(restored);
+      else setClaudeMd(restored);
+
+      setApplyMsg(`복원 완료. 사용한 백업: ${lastBackup.path}`);
+      setLastBackup(null);
+
+      if (selected) {
+        const result = await invoke<ReadResult>("read_session", { path: selected.path });
+        const parsed = parseSession(result.content, selected.session_id, selected.project, selected.path);
+        const diag = analyzeSession(parsed, restored);
+        const usageWindow = buildUsageWindowContext(diag, diagnostics);
+        setDiagnostic(diag);
+        setFixes(prescribe(diag, restored, usageWindow));
+      }
+    } catch (e) {
+      setApplyMsg(`오류: ${String(e)}`);
+    } finally {
+      setApplying(false);
+    }
+  }, [lastBackup, selected, diagnostics]);
 
   return (
     <div className="layout">
@@ -168,6 +216,13 @@ export default function App() {
             {applyMsg && (
               <div className="card" style={{ color: applyMsg.startsWith("오류") ? "var(--red)" : "var(--green)", fontSize: 12 }}>
                 {applyMsg}
+                {lastBackup && !applyMsg.startsWith("오류") && (
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn ghost" onClick={handleRestoreBackup} disabled={applying}>
+                      {applying ? "복원 중..." : "백업에서 되돌리기"}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -214,11 +269,12 @@ export default function App() {
                   <DetailRow label="도구 성공률" score={diagnostic.scoreBreakdown.toolSuccessRate} desc={diagnostic.scoreBreakdown.explanations.toolSuccessRate} />
                   <DetailRow label="컨텍스트 밀도" score={diagnostic.scoreBreakdown.contextDensity} desc={diagnostic.scoreBreakdown.explanations.contextDensity} />
                   <DetailRow 
-                    label={diagnostic.session.provider === "gemini" ? "GEMINI.md 최적화" : "CLAUDE.md 최적화"} 
+                    label={`${getConfigLabel(diagnostic.session.provider)} 최적화`}
                     score={diagnostic.scoreBreakdown.claudeMdHealth} 
                     desc={diagnostic.scoreBreakdown.explanations.claudeMdHealth} 
                   />
                   <DetailRow label="재시도 억제" score={diagnostic.scoreBreakdown.retryHealth} desc={diagnostic.scoreBreakdown.explanations.retryHealth} />
+                  <DetailRow label="세션 집중도" score={diagnostic.scoreBreakdown.actionFocus} desc={diagnostic.scoreBreakdown.explanations.actionFocus} />
                 </div>
               </div>
             )}
@@ -237,10 +293,54 @@ const DETAIL_TIPS: Record<string, string[]> = {
   "캐시 적중률": ["세션 초반에 필요한 파일을 모두 Read하고 이후엔 변경을 최소화하세요."],
   "도구 성공률": ["설정 파일에 '도구 3회 실패 시 다른 접근법을 시도하라'고 명시하세요."],
   "컨텍스트 밀도": ["출력 형식과 기대 길이를 구체적으로 요청하세요."],
-  "CLAUDE.md 최적화": ["CLAUDE.md를 1,500자 이내로 유지하고 원칙만 간결하게 서술하세요."],
-  "GEMINI.md 최적화": ["GEMINI.md의 불필요한 전역 지침을 줄이고 최신 규칙만 유지하세요."],
+  "CLAUDE.md 최적화": ["항상 필요한 지침은 유지하고, 상황별 긴 절차는 별도 문서나 Skill로 분리하세요."],
+  "GEMINI.md 최적화": ["전역 지침에는 핵심 원칙만 두고, 특정 작업 지침은 필요할 때만 읽게 하세요."],
+  "AGENTS.md 최적화": ["전역 AGENTS.md는 라우팅 규칙 중심으로 두고, 프로젝트별 상세 지침은 해당 저장소에만 두세요."],
   "재시도 억제": ["동일 에러 반복 시 전략을 수정하도록 설정 파일에 명시하세요."],
+  "세션 집중도": ["한 세션에는 하나의 목표만 맡기고, 기획/구현/검증은 별도 세션으로 나누세요."],
 };
+
+function getConfigMd(provider: string, claudeMd: string, geminiMd: string, codexMd: string): string {
+  if (provider === "gemini") return geminiMd;
+  if (provider === "codex") return codexMd;
+  return claudeMd;
+}
+
+function getConfigLabel(provider: string): string {
+  if (provider === "gemini") return "GEMINI.md";
+  if (provider === "codex") return "AGENTS.md";
+  return "CLAUDE.md";
+}
+
+function buildUsageWindowContext(current: DiagnosticResult, diagnostics: Map<string, DiagnosticResult>): UsageWindowContext {
+  const byPath = new Map<string, DiagnosticResult>(diagnostics);
+  byPath.set(current.session.filePath, current);
+
+  const anchor = parseSessionTime(current.session.endTime) ?? parseSessionTime(current.session.startTime) ?? Date.now();
+  const fiveHoursMs = 5 * 60 * 60 * 1000;
+  const windowStart = anchor - fiveHoursMs;
+  const window = Array.from(byPath.values()).filter(result => {
+    const time = parseSessionTime(result.session.endTime) ?? parseSessionTime(result.session.startTime);
+    return time === null ? result.session.filePath === current.session.filePath : time >= windowStart && time <= anchor;
+  });
+  const fallback = window.length > 0 ? window : [current];
+
+  return {
+    fiveHourTotalTokens: fallback.reduce((sum, result) => sum + getSessionTotalTokens(result), 0),
+    fiveHourUserTurns: fallback.reduce((sum, result) => sum + result.session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length, 0),
+    analyzedSessionCount: fallback.length,
+  };
+}
+
+function parseSessionTime(value: string): number | null {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function getSessionTotalTokens(result: DiagnosticResult): number {
+  return result.session.totalInputTokens + result.session.totalOutputTokens + result.session.totalCacheReadTokens;
+}
 
 function DetailRow({ label, score, desc }: { label: string; score: number; desc: string }) {
   const color = score > 80 ? "var(--green)" : score > 50 ? "var(--orange)" : "var(--red)";

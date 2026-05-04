@@ -20,11 +20,11 @@ const METRIC_TIPS: Record<string, Tip[]> = {
   cache: [
     { title: "작업 초반에 필요한 파일을 모두 로드하세요", body: "대화 중반에 새 파일을 추가로 Read하면 캐시가 무효화됩니다. 필요한 컨텍스트를 세션 초반에 한 번에 준비하세요." },
     { title: "한 세션, 한 주제 원칙을 지키세요", body: "무관한 작업을 같은 세션에 섞으면 컨텍스트가 자주 바뀌어 캐시 효율이 떨어집니다. 작업별로 세션을 분리하세요." },
-    { title: "CLAUDE.md 구조를 안정적으로 유지하세요", body: "CLAUDE.md 내용이 바뀔 때마다 캐시가 재생성됩니다. 자주 편집하기보다 처음부터 안정된 지침을 작성하는 것이 중요합니다." },
+    { title: "설정 파일 구조를 안정적으로 유지하세요", body: "CLAUDE.md/AGENTS.md 내용이 바뀔 때마다 캐시가 재생성될 수 있습니다. 자주 편집하기보다 처음부터 안정된 지침을 작성하는 것이 중요합니다." },
   ],
   tool: [
-    { title: "도구 3회 실패 시 대안 전략을 명시하세요", body: 'CLAUDE.md에 "같은 도구로 3회 이상 실패하면 다른 접근법을 시도하거나 사용자에게 보고하라"고 명시하면 반복 실패를 막을 수 있습니다.' },
-    { title: "파일 경로는 항상 절대경로를 사용하도록 명시하세요", body: "상대경로는 실행 위치에 따라 달라져 도구 실패를 유발합니다. CLAUDE.md에 절대경로 사용을 강제하세요." },
+    { title: "도구 3회 실패 시 대안 전략을 명시하세요", body: '설정 파일에 "같은 도구로 3회 이상 실패하면 다른 접근법을 시도하거나 사용자에게 보고하라"고 명시하면 반복 실패를 막을 수 있습니다.' },
+    { title: "파일 경로는 항상 절대경로를 사용하도록 명시하세요", body: "상대경로는 실행 위치에 따라 달라져 도구 실패를 유발합니다. 설정 파일에 절대경로 사용을 강제하세요." },
     { title: "작업 전 파일 존재 여부 확인 단계를 추가하세요", body: '파일·디렉토리 존재 여부를 먼저 Bash로 확인 후 작업하도록 지침을 추가하면 "파일 없음" 오류를 크게 줄일 수 있습니다.' },
   ],
   context: [
@@ -32,32 +32,37 @@ const METRIC_TIPS: Record<string, Tip[]> = {
     { title: "목적·현황·원하는 결과를 한 번에 포함하세요", body: "모호한 질문은 짧고 단편적인 답변을 유발합니다. 맥락을 충분히 제공하면 컨텍스트 대비 출력 효율이 높아집니다." },
   ],
   claudeMd: [
-    { title: "CLAUDE.md를 1,500자 이내로 유지하세요", body: "매 요청마다 CLAUDE.md 전체가 전송됩니다. 구체적인 예시보다 원칙만 남기고, 오래된 지침은 삭제하세요." },
-    { title: "섹션별 우선순위를 매기고 하위 섹션을 제거하세요", body: "자주 쓰지 않는 섹션은 별도 파일로 분리하거나 삭제하세요. Claude에 자주 주는 지침만 남기세요." },
-    { title: "반복되는 내용을 통합하세요", body: "비슷한 지침이 여러 섹션에 분산되어 있다면 하나로 합치면 토큰을 즉시 줄일 수 있습니다." },
+    { title: "상시 지침과 온디맨드 지침을 분리하세요", body: "언어, 승인 정책, 파괴 명령 금지처럼 항상 필요한 규칙은 남기고, 특정 작업에서만 필요한 긴 절차는 Skill이나 별도 문서로 옮기세요." },
+    { title: "섹션별 사용 빈도를 기준으로 정리하세요", body: "자주 쓰는 섹션은 유지하고, 드물게 쓰는 섹션은 삭제보다 필요할 때만 읽는 구조로 바꾸는 편이 안전합니다." },
+    { title: "반복되는 내용을 하나의 원칙으로 통합하세요", body: "비슷한 지침이 여러 섹션에 분산되어 있다면 하나의 짧은 원칙으로 합쳐 상시 로딩 비용을 줄이세요." },
   ],
   retry: [
-    { title: "실패 시 즉시 다른 전략을 쓰도록 명시하세요", body: 'CLAUDE.md에 "동일 접근법으로 2회 이상 실패하면 전략을 바꾸거나 사용자에게 상황을 보고하라"고 명시하세요.' },
+    { title: "실패 시 즉시 다른 전략을 쓰도록 명시하세요", body: '설정 파일에 "동일 접근법으로 2회 이상 실패하면 전략을 바꾸거나 사용자에게 상황을 보고하라"고 명시하세요.' },
     { title: "복잡한 작업에 중간 체크포인트를 추가하세요", body: "단계별 확인 시점을 명시하면 Claude가 길을 잃지 않아 반복 시도가 줄어듭니다." },
     { title: "에러 메시지를 포함해서 재요청하세요", body: "에러가 발생하면 에러 메시지 전체를 포함해 다시 요청하면 Claude가 맥락을 이해해 같은 실수를 반복하지 않습니다." },
+  ],
+  action: [
+    { title: "한 세션에는 하나의 목표만 맡기세요", body: "기획, 구현, 검증이 섞이면 이전 맥락이 계속 남아 입력 토큰이 커집니다. 단계가 바뀌면 새 세션으로 이동하세요." },
+    { title: "기획 결과만 짧게 넘기세요", body: "기획 세션 전체를 붙이지 말고 결정 사항, 파일 범위, 완료 조건만 5줄 이내로 새 세션에 전달하세요." },
   ],
 };
 
 const GENERAL_TIPS: Tip[] = [
   { title: "새 작업은 새 세션에서 시작하세요", body: "이전 작업의 컨텍스트가 남아있으면 불필요한 입력 토큰이 계속 누적됩니다. 관련 없는 새 작업은 항상 새 세션에서 시작하는 것이 효율적입니다." },
-  { title: "CLAUDE.md 정기 점검을 습관화하세요", body: "한 달에 한 번 CLAUDE.md를 검토하고 실제로 사용하는 지침만 남기세요. 누적된 지침이 토큰 비용을 조용히 높이고 있을 수 있습니다." },
+  { title: "설정 파일 정기 점검을 습관화하세요", body: "한 달에 한 번 CLAUDE.md/AGENTS.md를 검토하고 실제로 사용하는 지침만 남기세요. 누적된 지침이 토큰 비용을 조용히 높이고 있을 수 있습니다." },
   { title: "캐시 사용량을 모니터링하세요", body: "cache_read_tokens가 input_tokens보다 훨씬 적다면 컨텍스트가 자주 바뀌고 있다는 신호입니다. 작업 구조를 점검해보세요." },
 ];
 
 export function QuestionGuide({ patterns, scoreBreakdown }: Props) {
-  const { cacheEfficiency, toolSuccessRate, contextDensity, claudeMdHealth, retryHealth } = scoreBreakdown;
+  const { cacheEfficiency, toolSuccessRate, contextDensity, claudeMdHealth, retryHealth, actionFocus } = scoreBreakdown;
 
   const lowMetrics: { label: string; score: number; tips: Tip[] }[] = [];
   if (cacheEfficiency < 60)  lowMetrics.push({ label: "캐시 효율 개선",   score: cacheEfficiency,  tips: METRIC_TIPS.cache });
   if (toolSuccessRate < 80)  lowMetrics.push({ label: "도구 성공률 개선", score: toolSuccessRate,  tips: METRIC_TIPS.tool });
   if (contextDensity < 50)   lowMetrics.push({ label: "컨텍스트 밀도 개선", score: contextDensity, tips: METRIC_TIPS.context });
-  if (claudeMdHealth < 60)   lowMetrics.push({ label: "CLAUDE.md 최적화", score: claudeMdHealth,  tips: METRIC_TIPS.claudeMd });
+  if (claudeMdHealth < 60)   lowMetrics.push({ label: "설정 파일 최적화", score: claudeMdHealth,  tips: METRIC_TIPS.claudeMd });
   if (retryHealth < 70)      lowMetrics.push({ label: "반복 요청 억제",   score: retryHealth,     tips: METRIC_TIPS.retry });
+  if (actionFocus < 70)      lowMetrics.push({ label: "세션 집중도 개선", score: actionFocus,     tips: METRIC_TIPS.action });
 
   return (
     <div>
@@ -78,8 +83,8 @@ export function QuestionGuide({ patterns, scoreBreakdown }: Props) {
 
               {pattern.type === "CONTEXT_BLOAT" && isContextBloatEvidence(pattern.evidence) && (
                 <>
-                  <TipCard tip={{ title: "무거운 섹션을 핵심 원칙으로 압축하세요", body: `상위 ${pattern.evidence.topOffenders.length}개 섹션이 전체 토큰의 대부분을 차지합니다. 각 섹션을 3-5줄로 압축하거나, 자주 쓰지 않으면 삭제하세요.` }} />
-                  <TipCard tip={{ title: "코드 예시를 CLAUDE.md에서 제거하세요", body: "코드 예시는 토큰을 많이 소모합니다. 예시 대신 '어떻게'에 대한 원칙만 짧게 서술하면 같은 효과를 낼 수 있습니다." }} />
+                  <TipCard tip={{ title: "무거운 섹션을 역할별로 분리하세요", body: `상위 ${pattern.evidence.topOffenders.length}개 섹션이 전체 토큰의 대부분을 차지합니다. 항상 필요한 핵심은 남기고, 상황별 절차는 온디맨드 문서로 옮기세요.` }} />
+                  <TipCard tip={{ title: "긴 예시는 필요할 때만 읽게 하세요", body: "코드 예시와 상세 절차는 토큰을 많이 소모합니다. 상시 지침에는 원칙과 트리거만 두고, 예시는 별도 파일이나 Skill로 분리하세요." }} />
                 </>
               )}
 
@@ -92,8 +97,15 @@ export function QuestionGuide({ patterns, scoreBreakdown }: Props) {
 
               {pattern.type === "TOOL_THRASH" && isToolThrashEvidence(pattern.evidence) && (
                 <>
-                  <TipCard tip={{ title: `${pattern.evidence.toolName} 실패 대응 지침 추가`, body: `이 도구가 ${pattern.evidence.consecutiveErrors}회 연속 실패했습니다. CLAUDE.md에 실패 시 즉시 대안을 시도하도록 명시하세요.` }} accent="var(--red)" />
-                  <TipCard tip={{ title: "입력 유효성 검사를 먼저 수행하도록 지침 추가", body: "도구 호출 전 입력값이 유효한지 확인하는 단계를 CLAUDE.md에 명시하면 같은 오류 반복을 크게 줄일 수 있습니다." }} accent="var(--red)" />
+                  <TipCard tip={{ title: `${pattern.evidence.toolName} 실패 대응 지침 추가`, body: `이 도구가 ${pattern.evidence.consecutiveErrors}회 연속 실패했습니다. 설정 파일에 실패 시 즉시 대안을 시도하도록 명시하세요.` }} accent="var(--red)" />
+                  <TipCard tip={{ title: "입력 유효성 검사를 먼저 수행하도록 지침 추가", body: "도구 호출 전 입력값이 유효한지 확인하는 단계를 설정 파일에 명시하면 같은 오류 반복을 크게 줄일 수 있습니다." }} accent="var(--red)" />
+                </>
+              )}
+
+              {(pattern.type === "SESSION_SCOPE_DRIFT" || pattern.type === "PHASE_MIXING") && (
+                <>
+                  <TipCard tip={{ title: "세션을 단계별로 분리하세요", body: "기획은 기획 세션에서 끝내고, 구현은 결정 사항만 들고 새 세션에서 시작하세요." }} accent="var(--orange)" />
+                  <TipCard tip={{ title: "완료 조건을 첫 메시지에 고정하세요", body: "새 세션 첫 메시지에는 목표, 파일 범위, 완료 조건만 포함하면 컨텍스트 누적을 줄일 수 있습니다." }} accent="var(--orange)" />
                 </>
               )}
             </div>
@@ -125,7 +137,7 @@ export function QuestionGuide({ patterns, scoreBreakdown }: Props) {
 
       {/* 일반 베스트 프랙티스 */}
       <div className="card">
-        <div className="card-title">Claude Code 효율 베스트 프랙티스</div>
+        <div className="card-title">AI 코딩 세션 효율 베스트 프랙티스</div>
         {GENERAL_TIPS.map((tip, i) => <TipCard key={i} tip={tip} />)}
       </div>
     </div>

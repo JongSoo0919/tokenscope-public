@@ -47,6 +47,12 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
         scan_dir_for_sessions(&omc_sessions_dir, "omc-global", &mut sessions, true);
     }
 
+    // 4. Codex Sessions (~/.codex/sessions/YYYY/MM/DD/*.jsonl)
+    let codex_sessions_dir = home.join(".codex").join("sessions");
+    if codex_sessions_dir.exists() {
+        scan_dir_for_sessions(&codex_sessions_dir, "codex", &mut sessions, true);
+    }
+
     sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
     // Remove duplicates by path
     sessions.dedup_by(|a, b| a.path == b.path);
@@ -65,6 +71,7 @@ fn scan_dir_for_sessions(dir: &Path, project_name: &str, sessions: &mut Vec<Sess
                 if ext == Some("jsonl") || ext == Some("json") {
                     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if is_ignored_file(filename) { continue; }
+                    if project_name == "codex" && !codex_has_visible_user_turn(&path) { continue; }
 
                     if let Some(s) = get_session_file(&path, project_name) {
                         sessions.push(s);
@@ -92,13 +99,51 @@ fn get_session_file(path: &PathBuf, project_name: &str) -> Option<SessionFile> {
     let session_id = path.file_stem()
         .and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
 
+    let project = if project_name == "codex" {
+        infer_codex_project(path).unwrap_or_else(|| project_name.to_string())
+    } else {
+        project_name.to_string()
+    };
+
     Some(SessionFile {
         session_id,
-        project: project_name.to_string(),
+        project,
         path: path.to_string_lossy().to_string(),
         size_bytes: metadata.len(),
         modified,
     })
+}
+
+fn codex_has_visible_user_turn(path: &PathBuf) -> bool {
+    let Ok(content) = fs::read_to_string(path) else { return false; };
+    content.lines().any(|line| {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return false; };
+        let payload = &value["payload"];
+        if value["type"] != "response_item" || payload["type"] != "message" || payload["role"] != "user" {
+            return false;
+        }
+        let Some(items) = payload["content"].as_array() else { return false; };
+        items.iter().any(|item| {
+            let text = item["text"].as_str().unwrap_or("").trim();
+            !text.is_empty()
+                && !text.starts_with("<user_shell_command>")
+                && !text.starts_with("<environment_context>")
+                && !text.starts_with("<permissions instructions>")
+                && !text.starts_with("<skills_instructions>")
+                && !text.starts_with("Continue working toward the active thread goal.")
+        })
+    })
+}
+
+fn infer_codex_project(path: &PathBuf) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    let first = content.lines().next()?;
+    let value = serde_json::from_str::<serde_json::Value>(first).ok()?;
+    let cwd = value["payload"]["cwd"].as_str()?;
+    Path::new(cwd)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string())
 }
 
 #[tauri::command]
@@ -137,6 +182,14 @@ fn read_gemini_md() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_codex_md() -> Result<String, String> {
+    let home = dirs_next().map_err(|e| e.to_string())?;
+    let codex_md = home.join(".codex").join("AGENTS.md");
+    if !codex_md.exists() { return Ok(String::new()); }
+    fs::read_to_string(&codex_md).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn write_config_md(provider: String, content: String, backup_dir: String) -> Result<String, String> {
     let home = dirs_next().map_err(|e| e.to_string())?;
     let config_path = match provider.to_lowercase().as_str() {
@@ -149,6 +202,7 @@ fn write_config_md(provider: String, content: String, backup_dir: String) -> Res
                 home.join(".config").join("gemini-cli").join("GEMINI.md")
             }
         },
+        "codex" => home.join(".codex").join("AGENTS.md"),
         _ => return Err(format!("Unsupported provider: {}", provider)),
     };
 
@@ -184,6 +238,7 @@ fn restore_backup(backup_path: String, provider: String) -> Result<(), String> {
                 home.join(".config").join("gemini-cli").join("GEMINI.md")
             }
         },
+        "codex" => home.join(".codex").join("AGENTS.md"),
         _ => return Err(format!("Unsupported provider: {}", provider)),
     };
     
@@ -214,6 +269,7 @@ pub fn run() {
             read_session,
             read_claude_md,
             read_gemini_md,
+            read_codex_md,
             write_config_md,
             restore_backup,
             get_home_dir,

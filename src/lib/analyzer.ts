@@ -1,7 +1,12 @@
-import { ParsedMessage, SessionData, ClaudeSection, parseClaudeMd, estimateTokens } from "./parser";
+import { ParsedMessage, SessionData, ClaudeSection, parseClaudeMd, estimateTokens, isHumanVisibleMessage } from "./parser";
 import { PROVIDER_CONFIGS, calculateCost, formatCost } from "./providers";
 
-export type WastePatternType = "CONTEXT_BLOAT" | "RETRY_STORM" | "TOOL_THRASH";
+export type WastePatternType =
+  | "CONTEXT_BLOAT"
+  | "RETRY_STORM"
+  | "TOOL_THRASH"
+  | "SESSION_SCOPE_DRIFT"
+  | "PHASE_MIXING";
 
 export interface WastePattern {
   type: WastePatternType;
@@ -29,7 +34,23 @@ export interface ToolThrashEvidence {
   messageIndices: number[];
 }
 
-export type WasteEvidence = ContextBloatEvidence | RetryStormEvidence | ToolThrashEvidence;
+export interface SessionScopeEvidence {
+  detectedWorkTypes: string[];
+  userTurns: number;
+  recommendation: string;
+}
+
+export interface PhaseMixingEvidence {
+  phases: string[];
+  recommendation: string;
+}
+
+export type WasteEvidence =
+  | ContextBloatEvidence
+  | RetryStormEvidence
+  | ToolThrashEvidence
+  | SessionScopeEvidence
+  | PhaseMixingEvidence;
 
 export interface ScoreBreakdown {
   cacheEfficiency: number;   // 0-100
@@ -37,6 +58,7 @@ export interface ScoreBreakdown {
   contextDensity: number;    // 0-100
   claudeMdHealth: number;    // 0-100: CLAUDE.md/GEMINI.md health
   retryHealth: number;       // 0-100
+  actionFocus: number;       // 0-100
   overall: number;           // weighted avg
   explanations: {
     cacheEfficiency: string;
@@ -44,7 +66,15 @@ export interface ScoreBreakdown {
     contextDensity: string;
     claudeMdHealth: string;
     retryHealth: string;
+    actionFocus: string;
   };
+}
+
+export interface SessionDigest {
+  headline: string;
+  keyRequests: string[];
+  assistantActions: string[];
+  tokenAdvice: string[];
 }
 
 export interface DiagnosticResult {
@@ -54,6 +84,7 @@ export interface DiagnosticResult {
   healthScore: number;
   scoreBreakdown: ScoreBreakdown;
   sessionSummary: string;
+  sessionDigest: SessionDigest;
   estimatedCost: number;
   estimatedCostFormatted: string;
 }
@@ -74,9 +105,16 @@ export function analyzeSession(session: SessionData, configMdContent: string): D
   const thrash = detectToolThrash(session.messages);
   if (thrash) patterns.push(...thrash);
 
+  const scopeDrift = detectSessionScopeDrift(session.messages);
+  if (scopeDrift) patterns.push(scopeDrift);
+
+  const phaseMixing = detectPhaseMixing(session.messages);
+  if (phaseMixing) patterns.push(phaseMixing);
+
   const totalWastedTokens = patterns.reduce((sum, p) => sum + p.estimatedWastedTokens, 0);
   const scoreBreakdown = computeScoreBreakdown(session, configMdContent, patterns);
-  const sessionSummary = extractSessionSummary(session.messages);
+  const sessionDigest = extractSessionDigest(session.messages, scoreBreakdown);
+  const sessionSummary = sessionDigest.headline;
 
   const estimatedCost = calculateCost(
     session.provider,
@@ -93,6 +131,7 @@ export function analyzeSession(session: SessionData, configMdContent: string): D
     healthScore: scoreBreakdown.overall,
     scoreBreakdown,
     sessionSummary,
+    sessionDigest,
     estimatedCost,
     estimatedCostFormatted,
   };
@@ -147,14 +186,14 @@ function computeScoreBreakdown(
 
   const configMdTokens = estimateTokens(configMdContent);
   const configMdHealth = Math.round(clamp(1 - configMdTokens / 3000, 0, 1) * 100);
-  const configFileName = session.provider === "gemini" ? "GEMINI.md" : "CLAUDE.md";
+  const configFileName = getConfigFileName(session.provider);
   const configMdExp = configMdTokens < 700
-    ? `${configFileName}가 매우 가볍습니다 (~${configMdTokens} 토큰).`
+    ? `${configFileName} 상시 로딩 비용이 낮습니다 (~${configMdTokens} 토큰).`
     : configMdTokens < 1500
-    ? `${configFileName} 크기가 적당합니다 (~${configMdTokens} 토큰).`
-    : `${configFileName}가 무겁습니다 (~${configMdTokens} 토큰). 불필요한 내용을 정리하면 매 요청마다 토큰을 아낄 수 있습니다.`;
+    ? `${configFileName} 상시 로딩 비용이 관리 가능한 수준입니다 (~${configMdTokens} 토큰).`
+    : `${configFileName} 상시 로딩 비용이 큽니다 (~${configMdTokens} 토큰). 필수 지침은 유지하고, 상황별 지침은 필요할 때만 읽도록 분리하세요.`;
 
-  const userMessages = session.messages.filter(m => m.role === "user" && !m.isToolResult);
+  const userMessages = session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m));
   const retryPattern = patterns.find(p => p.type === "RETRY_STORM");
   const retryEvidence = retryPattern && isRetryStormEvidence(retryPattern.evidence)
     ? retryPattern.evidence
@@ -166,19 +205,33 @@ function computeScoreBreakdown(
     ? "반복적인 요청이나 불필요한 재시도가 발견되지 않았습니다."
     : `${extraMessages}개의 반복 요청이 감지되었습니다. 같은 지점에서 헤매고 있을 가능성이 큽니다.`;
 
-  const cacheWeight = providerConfig.supportsCache ? 0.30 : 0;
-  const toolWeight = providerConfig.supportsTools ? 0.25 : 0;
-  const contextWeight = 0.20;
-  const configMdWeight = 0.15;
-  const retryWeight = 0.10;
+  const scopePattern = patterns.find(p => p.type === "SESSION_SCOPE_DRIFT");
+  const phasePattern = patterns.find(p => p.type === "PHASE_MIXING");
+  const actionPenalty =
+    (scopePattern?.severity === "HIGH" ? 45 : scopePattern?.severity === "MEDIUM" ? 30 : scopePattern ? 15 : 0) +
+    (phasePattern?.severity === "HIGH" ? 35 : phasePattern?.severity === "MEDIUM" ? 25 : phasePattern ? 15 : 0);
+  const actionFocus = Math.round(clamp(100 - actionPenalty, 0, 100));
+  const actionFocusExp = actionFocus >= 85
+    ? "세션이 하나의 작업 흐름에 잘 집중되어 있습니다."
+    : actionFocus >= 60
+    ? "세션에 서로 다른 작업 흐름이 일부 섞였습니다. 다음부터는 큰 단계별로 세션을 나누는 편이 좋습니다."
+    : "한 세션에서 기획, 구현, 검증 또는 여러 목적이 많이 섞였습니다. 세션을 역할별로 나누면 토큰 누적과 컨텍스트 혼선을 줄일 수 있습니다.";
 
-  const totalWeight = cacheWeight + toolWeight + contextWeight + configMdWeight + retryWeight;
+  const cacheWeight = providerConfig.supportsCache ? 0.24 : 0;
+  const toolWeight = providerConfig.supportsTools ? 0.22 : 0;
+  const contextWeight = 0.18;
+  const configMdWeight = 0.12;
+  const retryWeight = 0.10;
+  const actionWeight = 0.14;
+
+  const totalWeight = cacheWeight + toolWeight + contextWeight + configMdWeight + retryWeight + actionWeight;
   const normalizedWeights = {
     cache: cacheWeight / totalWeight,
     tool: toolWeight / totalWeight,
     context: contextWeight / totalWeight,
     config: configMdWeight / totalWeight,
     retry: retryWeight / totalWeight,
+    action: actionWeight / totalWeight,
   };
 
   const overall = Math.round(
@@ -186,17 +239,19 @@ function computeScoreBreakdown(
     toolSuccessRate * normalizedWeights.tool +
     contextDensity * normalizedWeights.context +
     configMdHealth * normalizedWeights.config +
-    retryHealth * normalizedWeights.retry
+    retryHealth * normalizedWeights.retry +
+    actionFocus * normalizedWeights.action
   );
 
   return {
-    cacheEfficiency, toolSuccessRate, contextDensity, claudeMdHealth: configMdHealth, retryHealth, overall,
+    cacheEfficiency, toolSuccessRate, contextDensity, claudeMdHealth: configMdHealth, retryHealth, actionFocus, overall,
     explanations: {
       cacheEfficiency: cacheEfficiencyExp,
       toolSuccessRate: toolSuccessExp,
       contextDensity: contextDensityExp,
       claudeMdHealth: configMdExp,
       retryHealth: retryExp,
+      actionFocus: actionFocusExp,
     }
   };
 }
@@ -207,20 +262,43 @@ function clamp(v: number, min: number, max: number): number {
 
 // ── Session summary ────────────────────────────────────────────────────────
 
-function extractSessionSummary(messages: ParsedMessage[]): string {
-  const userMessages = messages.filter(
-    m => m.role === "user" && !m.isToolResult && m.contentText.trim().length > 5
-  );
+function extractSessionDigest(messages: ParsedMessage[], score: ScoreBreakdown): SessionDigest {
+  const userMessages = messages.filter(m => m.role === "user" && isHumanVisibleMessage(m) && m.contentText.trim().length > 5);
 
-  if (userMessages.length === 0) return "내용 없음";
+  if (userMessages.length === 0) {
+    return {
+      headline: "내용 없음",
+      keyRequests: [],
+      assistantActions: [],
+      tokenAdvice: ["사용자 요청이 기록되지 않아 세션 효율을 판단하기 어렵습니다."],
+    };
+  }
 
   const workType = classifyWorkType(messages);
   const firstMsg = userMessages[0];
   const mainTask = firstMsg.contentText.trim().split("\n")[0].trim().slice(0, 70);
   const turns = userMessages.length;
   const suffix = turns > 1 ? ` (${turns}턴)` : "";
+  const toolNames = summarizeToolNames(messages);
+  const assistantActions = toolNames.length > 0
+    ? [`사용 도구: ${toolNames.join(", ")}`]
+    : ["도구 사용 없이 대화 중심으로 진행"];
+  const keyRequests = userMessages.slice(0, 4).map((m, i) => {
+    const text = m.contentText.trim().split("\n")[0].replace(/\s+/g, " ").slice(0, 90);
+    return `${i + 1}. ${text}`;
+  });
+  const tokenAdvice = [
+    score.actionFocus < 70 ? "다음에는 한 세션에 하나의 목적만 두고, 기획/구현/검증은 분리하세요." : "세션 목적 분리는 양호합니다.",
+    score.contextDensity < 45 ? "입력 토큰 대비 출력이 적습니다. 요청 시 산출물 형식을 더 구체화하세요." : "입력 대비 산출 효율은 양호합니다.",
+    score.retryHealth < 70 ? "반복 요청이 감지됩니다. 실패 조건과 중단 기준을 먼저 명시하세요." : "반복 요청 억제는 양호합니다.",
+  ];
 
-  return `[${workType}] ${mainTask}${suffix}`;
+  return {
+    headline: `[${workType}] ${mainTask}${suffix}`,
+    keyRequests,
+    assistantActions,
+    tokenAdvice,
+  };
 }
 
 function classifyWorkType(messages: ParsedMessage[]): string {
@@ -228,14 +306,14 @@ function classifyWorkType(messages: ParsedMessage[]): string {
     .filter(m => m.isToolUse && m.toolName)
     .map(m => m.toolName!);
 
-  const hasWrite  = toolNames.some(t => ["Write", "Edit", "MultiEdit"].includes(t));
-  const hasBash   = toolNames.some(t => t === "Bash");
-  const hasWeb    = toolNames.some(t => ["WebSearch", "WebFetch"].includes(t));
-  const hasRead   = toolNames.some(t => t === "Read");
-  const hasAgent  = toolNames.some(t => t === "Agent");
+  const hasWrite  = toolNames.some(t => ["Write", "Edit", "MultiEdit", "apply_patch"].includes(t));
+  const hasBash   = toolNames.some(t => t === "Bash" || t === "exec_command");
+  const hasWeb    = toolNames.some(t => ["WebSearch", "WebFetch", "web.run"].includes(t));
+  const hasRead   = toolNames.some(t => t === "Read" || t === "view_image");
+  const hasAgent  = toolNames.some(t => t === "Agent" || t === "spawn_agent");
 
   const userText = messages
-    .filter(m => m.role === "user" && !m.isToolResult)
+    .filter(m => m.role === "user" && isHumanVisibleMessage(m))
     .map(m => m.contentText.toLowerCase())
     .join(" ");
 
@@ -255,6 +333,17 @@ function classifyWorkType(messages: ParsedMessage[]): string {
   return "대화";
 }
 
+function summarizeToolNames(messages: ParsedMessage[]): string[] {
+  const counts = new Map<string, number>();
+  for (const m of messages) {
+    if (m.isToolUse && m.toolName) counts.set(m.toolName, (counts.get(m.toolName) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([name, count]) => `${name} ${count}회`);
+}
+
 // ── Pattern detectors ──────────────────────────────────────────────────────
 
 function detectContextBloat(configMdContent: string, provider: string): WastePattern | null {
@@ -270,13 +359,13 @@ function detectContextBloat(configMdContent: string, provider: string): WastePat
     .slice(0, 3);
 
   const severity = totalEstimatedTokens > 4000 ? "HIGH" : totalEstimatedTokens > 2000 ? "MEDIUM" : "LOW";
-  const configFileName = provider === "gemini" ? "GEMINI.md" : "CLAUDE.md";
+  const configFileName = getConfigFileName(provider);
 
   return {
     type: "CONTEXT_BLOAT",
     severity,
-    title: `${configFileName} 컨텍스트 과부하`,
-    description: `${configFileName}가 매 요청마다 약 ${totalEstimatedTokens.toLocaleString()} 토큰을 소모합니다. 불필요한 섹션을 제거하거나 간결하게 압축하세요.`,
+    title: `${configFileName} 상시 로딩 비용 큼`,
+    description: `${configFileName}가 매 요청마다 약 ${totalEstimatedTokens.toLocaleString()} 토큰을 차지합니다. 삭제가 아니라 필수 지침과 온디맨드 지침을 분리할 후보를 찾으세요.`,
     estimatedWastedTokens: Math.max(0, totalEstimatedTokens - CONTEXT_BLOAT_THRESHOLD),
     evidence: { sections, totalEstimatedTokens, topOffenders } as ContextBloatEvidence,
   };
@@ -284,7 +373,7 @@ function detectContextBloat(configMdContent: string, provider: string): WastePat
 
 function detectRetryStorm(messages: ParsedMessage[]): WastePattern | null {
   const userTextMessages = messages
-    .filter(m => m.role === "user" && m.contentText.trim().length > 20 && !m.isToolResult)
+    .filter(m => m.role === "user" && isHumanVisibleMessage(m) && m.contentText.trim().length > 20)
     .map(m => m.contentText.trim());
 
   const counts = new Map<string, number>();
@@ -355,6 +444,76 @@ function detectToolThrash(messages: ParsedMessage[]): WastePattern[] {
   return patterns;
 }
 
+function detectSessionScopeDrift(messages: ParsedMessage[]): WastePattern | null {
+  const workTypes = detectWorkTypes(messages);
+  const userTurns = messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length;
+
+  if (workTypes.length <= 2 && userTurns <= 8) return null;
+
+  const severity = workTypes.length >= 5 || userTurns >= 16 ? "HIGH" : workTypes.length >= 4 || userTurns >= 10 ? "MEDIUM" : "LOW";
+  const estimatedWastedTokens = Math.max(0, (workTypes.length - 2) * 500 + Math.max(0, userTurns - 8) * 150);
+
+  return {
+    type: "SESSION_SCOPE_DRIFT",
+    severity,
+    title: "세션 범위 혼합",
+    description: `한 세션에서 ${workTypes.join(", ")} 흐름이 함께 감지되었습니다. 무관한 작업을 섞으면 이전 컨텍스트가 계속 누적되어 입력 토큰이 커집니다.`,
+    estimatedWastedTokens,
+    evidence: {
+      detectedWorkTypes: workTypes,
+      userTurns,
+      recommendation: "한 세션은 하나의 목적만 맡기고, 새 목적은 새 세션에서 시작하세요.",
+    } as SessionScopeEvidence,
+  };
+}
+
+function detectPhaseMixing(messages: ParsedMessage[]): WastePattern | null {
+  const phases = detectWorkTypes(messages).filter(t => ["기획", "구현", "검증", "리뷰", "디버깅"].includes(t));
+  const unique = Array.from(new Set(phases));
+
+  if (!unique.includes("기획") || (!unique.includes("구현") && !unique.includes("디버깅"))) return null;
+
+  const severity = unique.includes("검증") || unique.includes("리뷰") ? "MEDIUM" : "LOW";
+  return {
+    type: "PHASE_MIXING",
+    severity,
+    title: "기획/개발 단계 혼합",
+    description: "기획과 구현이 같은 세션에서 이어졌습니다. 기획 세션의 넓은 맥락이 개발 단계까지 남아 토큰 효율이 떨어질 수 있습니다.",
+    estimatedWastedTokens: severity === "MEDIUM" ? 900 : 500,
+    evidence: {
+      phases: unique,
+      recommendation: "기획 산출물을 짧게 정리한 뒤 새 세션에서 구현만 지시하세요.",
+    } as PhaseMixingEvidence,
+  };
+}
+
+function detectWorkTypes(messages: ParsedMessage[]): string[] {
+  const text = messages
+    .filter(m => m.role === "user" && isHumanVisibleMessage(m))
+    .map(m => m.contentText.toLowerCase())
+    .join(" ");
+  const toolNames = messages.filter(m => m.isToolUse && m.toolName).map(m => m.toolName!.toLowerCase());
+  const types = new Set<string>();
+
+  if (/기획|설계|plan|architecture|요구사항|전략/.test(text)) types.add("기획");
+  if (/구현|개발|수정|만들|추가|implement|build|code/.test(text) || toolNames.some(t => /edit|write|apply_patch/.test(t))) types.add("구현");
+  if (/테스트|검증|확인|verify|test|qa/.test(text) || toolNames.some(t => /test|playwright/.test(t))) types.add("검증");
+  if (/리뷰|검토|review/.test(text)) types.add("리뷰");
+  if (/에러|오류|버그|debug|fix|문제/.test(text)) types.add("디버깅");
+  if (/문서|readme|docs|가이드/.test(text)) types.add("문서");
+  if (/검색|조사|리서치|research|찾아/.test(text)) types.add("리서치");
+  if (toolNames.some(t => /web|search|fetch/.test(t))) types.add("리서치");
+  if (toolNames.some(t => /spawn_agent|agent/.test(t))) types.add("멀티에이전트");
+
+  return Array.from(types);
+}
+
+function getConfigFileName(provider: string): string {
+  if (provider === "gemini") return "GEMINI.md";
+  if (provider === "codex") return "AGENTS.md";
+  return "CLAUDE.md";
+}
+
 export function isContextBloatEvidence(e: WasteEvidence): e is ContextBloatEvidence {
   return "sections" in e;
 }
@@ -365,4 +524,12 @@ export function isRetryStormEvidence(e: WasteEvidence): e is RetryStormEvidence 
 
 export function isToolThrashEvidence(e: WasteEvidence): e is ToolThrashEvidence {
   return "toolName" in e;
+}
+
+export function isSessionScopeEvidence(e: WasteEvidence): e is SessionScopeEvidence {
+  return "detectedWorkTypes" in e;
+}
+
+export function isPhaseMixingEvidence(e: WasteEvidence): e is PhaseMixingEvidence {
+  return "phases" in e;
 }

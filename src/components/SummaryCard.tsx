@@ -1,4 +1,5 @@
 import { SessionData } from "../lib/parser";
+import { isHumanVisibleMessage } from "../lib/parser";
 import { DiagnosticResult } from "../lib/analyzer";
 
 interface Props {
@@ -57,7 +58,10 @@ function ScoreMeter({ label, score, hint }: MeterProps) {
 }
 
 export function SummaryCard({ session, diagnostic }: Props) {
-  const { scoreBreakdown: bd, sessionSummary } = diagnostic;
+  const { scoreBreakdown: bd, sessionSummary, sessionDigest } = diagnostic;
+  const configLabel = session.provider === "gemini" ? "GEMINI.md" : session.provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const userTurns = session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length;
+  const internalEvents = Math.max(0, session.messages.length - userTurns);
 
   return (
     <>
@@ -67,9 +71,16 @@ export function SummaryCard({ session, diagnostic }: Props) {
         <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 10, lineHeight: 1.5 }}>
           {sessionSummary}
         </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
+          <DigestBlock title="핵심 요청" items={sessionDigest.keyRequests} />
+          <DigestBlock title="수행 흐름" items={sessionDigest.assistantActions} />
+          <DigestBlock title="토큰 조언" items={sessionDigest.tokenAdvice} />
+        </div>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 11, color: "var(--muted)" }}>메시지 {fmt(session.messages.length)}개</span>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>사용자 요청 {fmt(userTurns)}턴</span>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>내부 이벤트 {fmt(internalEvents)}개</span>
           <span style={{ fontSize: 11, color: "var(--muted)" }}>소요 {formatDuration(session.startTime, session.endTime)}</span>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>공급자 {session.provider}</span>
           <span style={{ fontSize: 11, color: "var(--muted)" }}>모델 {session.model.replace("claude-", "").slice(0, 24)}</span>
           {session.parseErrors > 0 && (
             <span style={{ fontSize: 11, color: "var(--orange)" }}>파싱 오류 {session.parseErrors}개</span>
@@ -116,16 +127,32 @@ export function SummaryCard({ session, diagnostic }: Props) {
             <ScoreMeter label="캐시 효율" score={bd.cacheEfficiency} hint={bd.explanations.cacheEfficiency} />
             <ScoreMeter label="도구 성공률" score={bd.toolSuccessRate} hint={bd.explanations.toolSuccessRate} />
             <ScoreMeter label="컨텍스트 밀도" score={bd.contextDensity} hint={bd.explanations.contextDensity} />
-            <ScoreMeter label="CLAUDE.md 무게" score={bd.claudeMdHealth} hint={bd.explanations.claudeMdHealth} />
+            <ScoreMeter label={`${configLabel} 상시 비용`} score={bd.claudeMdHealth} hint={bd.explanations.claudeMdHealth} />
             <ScoreMeter label="반복 요청" score={bd.retryHealth} hint={bd.explanations.retryHealth} />
+            <ScoreMeter label="세션 집중도" score={bd.actionFocus} hint={bd.explanations.actionFocus} />
           </div>
         </div>
 
         {/* 가중치 안내 */}
         <div style={{ marginTop: 12, fontSize: 11, color: "var(--muted)", borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-          가중치: 캐시 30% · 도구성공 25% · 컨텍스트밀도 20% · CLAUDE.md 15% · 반복요청 10%
+          가중치: 캐시 · 도구성공 · 컨텍스트밀도 · 설정파일 · 반복요청 · 세션집중도
         </div>
       </div>
     </>
+  );
+}
+
+function DigestBlock({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div style={{ background: "var(--surface2)", borderRadius: 6, padding: 10, minHeight: 78 }}>
+      <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700, marginBottom: 6 }}>{title}</div>
+      {items.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--muted)" }}>-</div>
+      ) : items.slice(0, 3).map((item, i) => (
+        <div key={i} style={{ fontSize: 11, color: "var(--text)", lineHeight: 1.45, marginBottom: 4 }}>
+          {item}
+        </div>
+      ))}
+    </div>
   );
 }
