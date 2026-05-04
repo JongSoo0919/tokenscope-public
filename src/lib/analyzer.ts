@@ -6,7 +6,8 @@ export type WastePatternType =
   | "RETRY_STORM"
   | "TOOL_THRASH"
   | "SESSION_SCOPE_DRIFT"
-  | "PHASE_MIXING";
+  | "PHASE_MIXING"
+  | "BROAD_REQUEST";
 
 export interface WastePattern {
   type: WastePatternType;
@@ -45,12 +46,18 @@ export interface PhaseMixingEvidence {
   recommendation: string;
 }
 
+export interface BroadRequestEvidence {
+  requests: { original: string; improved: string; reason: string }[];
+  detectedPhrases: string[];
+}
+
 export type WasteEvidence =
   | ContextBloatEvidence
   | RetryStormEvidence
   | ToolThrashEvidence
   | SessionScopeEvidence
-  | PhaseMixingEvidence;
+  | PhaseMixingEvidence
+  | BroadRequestEvidence;
 
 export interface ScoreBreakdown {
   cacheEfficiency: number;   // 0-100
@@ -110,6 +117,9 @@ export function analyzeSession(session: SessionData, configMdContent: string): D
 
   const phaseMixing = detectPhaseMixing(session.messages);
   if (phaseMixing) patterns.push(phaseMixing);
+
+  const broadRequest = detectBroadRequests(session.messages);
+  if (broadRequest) patterns.push(broadRequest);
 
   const totalWastedTokens = patterns.reduce((sum, p) => sum + p.estimatedWastedTokens, 0);
   const scoreBreakdown = computeScoreBreakdown(session, configMdContent, patterns);
@@ -487,6 +497,89 @@ function detectPhaseMixing(messages: ParsedMessage[]): WastePattern | null {
   };
 }
 
+function detectBroadRequests(messages: ParsedMessage[]): WastePattern | null {
+  const broadPhrases = [
+    "전체적으로",
+    "전반적으로",
+    "알아서",
+    "좋게",
+    "개선해줘",
+    "고쳐줘",
+    "봐줘",
+    "한번 봐",
+    "문제 있으면",
+    "이상한 부분",
+    "전체 수정",
+    "do whatever",
+    "make it better",
+    "improve everything",
+  ];
+
+  const userMessages = messages
+    .filter(m => m.role === "user" && isHumanVisibleMessage(m))
+    .map(m => m.contentText.trim())
+    .filter(Boolean);
+
+  const requests = userMessages.flatMap(original => {
+    const normalized = original.toLowerCase();
+    const matches = broadPhrases.filter(phrase => normalized.includes(phrase.toLowerCase()));
+    const isLongAndUnscoped = original.length > 120 && !hasScopedConstraint(original);
+    if (matches.length === 0 && !isLongAndUnscoped) return [];
+
+    return [{
+      original: oneLine(original, 140),
+      improved: buildImprovedRequest(original),
+      reason: matches.length > 0
+        ? `"${matches.slice(0, 2).join(", ")}"처럼 범위가 넓은 표현이 감지되었습니다.`
+        : "요청은 길지만 수정 범위, 하지 말아야 할 일, 완료 조건이 부족합니다.",
+      matches,
+    }];
+  }).slice(0, 3);
+
+  if (requests.length === 0) return null;
+
+  const detectedPhrases = Array.from(new Set(requests.flatMap(r => r.matches)));
+  const severity = requests.length >= 3 ? "HIGH" : requests.length === 2 ? "MEDIUM" : "LOW";
+
+  return {
+    type: "BROAD_REQUEST",
+    severity,
+    title: "넓고 모호한 요청",
+    description: "사용자 요청에 범위가 넓거나 실행 조건이 부족한 표현이 있습니다. 말투 문제가 아니라 작업 단위가 커서 세션이 길어질 가능성이 큽니다.",
+    estimatedWastedTokens: requests.length * 350,
+    evidence: {
+      requests: requests.map(({ original, improved, reason }) => ({ original, improved, reason })),
+      detectedPhrases,
+    } as BroadRequestEvidence,
+  };
+}
+
+function hasScopedConstraint(text: string): boolean {
+  return /수정하지 마|하지 말|범위|파일|완료 조건|테스트|검증|근거|먼저|only|don't|do not|scope|file|criteria/i.test(text);
+}
+
+function buildImprovedRequest(original: string): string {
+  const lower = original.toLowerCase();
+  if (/리뷰|review/.test(lower)) {
+    return "코드 리뷰만 해. 버그, 회귀 위험, 빠진 테스트만 지적해. 스타일 취향이나 리팩토링 제안은 제외해.";
+  }
+  if (/에러|오류|버그|debug|fix|안 되|안되/.test(lower)) {
+    return "바로 고치지 마. 실패 로그를 보고 가능한 원인 3개를 우선순위로 정리해. 가장 가능성 높은 원인 하나만 검증한 뒤 수정해.";
+  }
+  if (/기획|설계|plan|요구사항/.test(lower)) {
+    return "아직 수정하지 마. 사용자 문제, MVP 범위, 구현 위험만 정리해줘. 결론 먼저, 10줄 이하.";
+  }
+  if (/검증|테스트|확인|qa|verify/.test(lower)) {
+    return "수정하지 말고 검증만 해. 빌드, 타입체크, 주요 UI 흐름을 확인하고 실패한 명령과 원인을 보고해.";
+  }
+  return "전체 수정하지 마. 관련 파일 1-2개에서 문제 후보 3개만 찾아줘. 근거와 수정 방향만 말하고, 승인 전에는 수정하지 마.";
+}
+
+function oneLine(text: string, max: number): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+}
+
 function detectWorkTypes(messages: ParsedMessage[]): string[] {
   const text = messages
     .filter(m => m.role === "user" && isHumanVisibleMessage(m))
@@ -532,4 +625,8 @@ export function isSessionScopeEvidence(e: WasteEvidence): e is SessionScopeEvide
 
 export function isPhaseMixingEvidence(e: WasteEvidence): e is PhaseMixingEvidence {
   return "phases" in e;
+}
+
+export function isBroadRequestEvidence(e: WasteEvidence): e is BroadRequestEvidence {
+  return "requests" in e;
 }

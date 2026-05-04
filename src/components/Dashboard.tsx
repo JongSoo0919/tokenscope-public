@@ -114,6 +114,9 @@ export function Dashboard({ diagnostics }: Props) {
   const verdict = buildVerdict(recentAvg, recentRiskCount, recentTool, recentRetry, recentAction);
   const verdictReasons = buildVerdictReasons(fiveHourResults, recentTool, recentRetry, recentAction, recentConfig);
   const topWaste = buildTopWaste(fiveHourResults);
+  const recentTokens = fiveHourResults.reduce((sum, result) => sum + getTotalTokens(result), 0);
+  const primaryAction = buildPrimaryAction(topWaste[0], recentTool, recentRetry, recentAction, recentConfig);
+  const blockAction = buildBlockAction(recentTokens, recentAvg, recentAction);
 
   const avgScore  = Math.round(avg(r => r.healthScore));
   const avgCache  = avg(r => r.scoreBreakdown.cacheEfficiency);
@@ -243,6 +246,11 @@ export function Dashboard({ diagnostics }: Props) {
               </div>
             ))}
           </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 14 }}>
+          <ActionBox title="바로 할 수 있는 액션" body={primaryAction} accent="var(--accent)" />
+          <ActionBox title="5시간 블록 행동 추천" body={blockAction} accent={recentTokens > 120000 ? "var(--orange)" : "var(--green)"} />
         </div>
       </div>
 
@@ -400,11 +408,24 @@ function MiniStat({ label, value, color }: { label: string; value: string; color
   );
 }
 
+function ActionBox({ title, body, accent }: { title: string; body: string; accent: string }) {
+  return (
+    <div style={{ background: "var(--surface2)", border: `1px solid ${accent}`, borderRadius: 6, padding: "10px 12px", minWidth: 0 }}>
+      <div style={{ fontSize: 10, color: accent, fontWeight: 800, marginBottom: 5 }}>{title}</div>
+      <div style={{ fontSize: 12, color: "var(--text)", lineHeight: 1.55 }}>{body}</div>
+    </div>
+  );
+}
+
 function getSessionTime(result: DiagnosticResult): number {
   const end = new Date(result.session.endTime).getTime();
   if (Number.isFinite(end)) return end;
   const start = new Date(result.session.startTime).getTime();
   return Number.isFinite(start) ? start : 0;
+}
+
+function getTotalTokens(result: DiagnosticResult): number {
+  return result.session.totalInputTokens + result.session.totalOutputTokens + result.session.totalCacheReadTokens;
 }
 
 function buildVerdict(avgScore: number, riskCount: number, toolScore: number, retryScore: number, actionScore: number) {
@@ -459,6 +480,38 @@ function buildTopWaste(results: DiagnosticResult[]): WasteCandidate[] {
   })))
     .sort((a, b) => b.tokens - a.tokens || severityRank(b.severity) - severityRank(a.severity))
     .slice(0, 3);
+}
+
+function buildPrimaryAction(topWaste: WasteCandidate | undefined, toolScore: number, retryScore: number, actionScore: number, configScore: number): string {
+  if (topWaste?.title.includes("요청")) {
+    return "질문 가이드에서 넓은 요청을 4요소 템플릿으로 바꾸고, 설정 파일에 사용자 요청 압축 도우미를 적용하세요.";
+  }
+  if (topWaste?.title.includes("도구") || toolScore < 70) {
+    return "처방 탭에서 실패 중단 기준을 설정 파일에 추가하세요. 같은 도구 2회 실패 후에는 대안을 보고하게 만듭니다.";
+  }
+  if (topWaste?.title.includes("세션") || actionScore < 70) {
+    return "처방 탭에서 세션 분리 기준을 적용하세요. 기획, 구현, 검증 전환 시 새 세션을 권장하게 합니다.";
+  }
+  if (topWaste?.title.includes("로딩") || configScore < 60) {
+    return "상시 지침 다이어트 처방을 확인하세요. 필수 지침만 남기고 긴 절차는 온디맨드 문서로 분리합니다.";
+  }
+  if (retryScore < 80) {
+    return "반복 요청이 감지됩니다. 다음 요청에는 실패 조건, 중단 기준, 검증 기준을 먼저 넣으세요.";
+  }
+  return "현재 방식은 양호합니다. 다음 새 목표는 새 세션에서 시작하고, 첫 메시지에 범위와 완료 조건만 남기세요.";
+}
+
+function buildBlockAction(tokens: number, avgScore: number, actionScore: number): string {
+  if (tokens > 120000 && actionScore < 70) {
+    return `최근 5시간 사용량이 ${tokens.toLocaleString("ko-KR")}토큰입니다. 지금은 새 기능 구현보다 검증, 요약, 문서화처럼 짧은 작업을 권장합니다.`;
+  }
+  if (tokens > 120000) {
+    return `최근 5시간 사용량이 ${tokens.toLocaleString("ko-KR")}토큰입니다. 큰 구현은 새 세션에서 시작하고 현재 세션은 결정 사항 요약으로 마무리하세요.`;
+  }
+  if (avgScore < 50) {
+    return "사용량보다 작업 품질이 먼저입니다. 새 작업을 시작하기 전에 목표, 범위, 하지 않을 일, 완료 조건을 한 줄씩 고정하세요.";
+  }
+  return "현재 5시간 블록은 무리한 수준은 아닙니다. 구현을 계속해도 되지만 단계가 바뀌면 새 세션으로 분리하세요.";
 }
 
 function severityRank(severity: string): number {

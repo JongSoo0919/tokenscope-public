@@ -1,4 +1,4 @@
-import { WastePattern, ScoreBreakdown, isContextBloatEvidence, isRetryStormEvidence, isToolThrashEvidence } from "../lib/analyzer";
+import { WastePattern, ScoreBreakdown, isContextBloatEvidence, isRetryStormEvidence, isToolThrashEvidence, isBroadRequestEvidence } from "../lib/analyzer";
 
 interface Props {
   patterns: WastePattern[];
@@ -12,6 +12,24 @@ function TipCard({ tip, accent = "var(--accent)" }: { tip: Tip; accent?: string 
     <div style={{ marginBottom: 8, padding: "10px 12px", background: "var(--surface2)", borderRadius: 6, borderLeft: `3px solid ${accent}` }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>{tip.title}</div>
       <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>{tip.body}</div>
+    </div>
+  );
+}
+
+function PromptPair({ bad, good, reason }: { bad: string; good: string; reason: string }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+      <div style={{ background: "rgba(255,95,95,0.10)", border: "1px solid rgba(255,95,95,0.35)", borderRadius: 6, padding: "10px 12px" }}>
+        <div style={{ fontSize: 10, color: "var(--red)", fontWeight: 700, marginBottom: 6 }}>지금처럼 말하면 넓습니다</div>
+        <div style={{ fontSize: 12, color: "var(--text)", lineHeight: 1.55 }}>{bad}</div>
+      </div>
+      <div style={{ background: "rgba(80,200,120,0.10)", border: "1px solid rgba(80,200,120,0.35)", borderRadius: 6, padding: "10px 12px" }}>
+        <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 700, marginBottom: 6 }}>다음에는 이렇게 말하세요</div>
+        <div style={{ fontSize: 12, color: "var(--text)", lineHeight: 1.55 }}>{good}</div>
+      </div>
+      <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--muted)", lineHeight: 1.45 }}>
+        {reason}
+      </div>
     </div>
   );
 }
@@ -51,6 +69,14 @@ const GENERAL_TIPS: Tip[] = [
   { title: "새 작업은 새 세션에서 시작하세요", body: "이전 작업의 컨텍스트가 남아있으면 불필요한 입력 토큰이 계속 누적됩니다. 관련 없는 새 작업은 항상 새 세션에서 시작하는 것이 효율적입니다." },
   { title: "설정 파일 정기 점검을 습관화하세요", body: "한 달에 한 번 CLAUDE.md/AGENTS.md를 검토하고 실제로 사용하는 지침만 남기세요. 누적된 지침이 토큰 비용을 조용히 높이고 있을 수 있습니다." },
   { title: "캐시 사용량을 모니터링하세요", body: "cache_read_tokens가 input_tokens보다 훨씬 적다면 컨텍스트가 자주 바뀌고 있다는 신호입니다. 작업 구조를 점검해보세요." },
+];
+
+const PROMPT_TEMPLATES: Tip[] = [
+  { title: "기획용", body: "아직 수정하지 마. 이 기능의 사용자 문제, MVP 범위, 구현 위험만 정리해줘. 결론 먼저, 10줄 이하." },
+  { title: "구현용", body: "PRODUCT_PLAN2.md 기준으로 Phase 1만 구현해. 수정 범위는 Dashboard와 analyzer로 제한해. 변경 전 짧은 계획을 말하고, 구현 후 build를 실행해." },
+  { title: "디버깅용", body: "바로 고치지 마. 실패 로그를 보고 가능한 원인 3개를 우선순위로 정리해. 가장 가능성 높은 원인 하나만 검증한 뒤 수정해." },
+  { title: "리뷰용", body: "코드 리뷰만 해. 버그, 회귀 위험, 빠진 테스트만 지적해. 스타일 취향이나 리팩토링 제안은 제외해." },
+  { title: "검증용", body: "수정하지 말고 검증만 해. 빌드, 타입체크, 주요 UI 흐름을 확인하고 실패한 명령과 원인을 보고해." },
 ];
 
 export function QuestionGuide({ patterns, scoreBreakdown }: Props) {
@@ -106,6 +132,25 @@ export function QuestionGuide({ patterns, scoreBreakdown }: Props) {
                 <>
                   <TipCard tip={{ title: "세션을 단계별로 분리하세요", body: "기획은 기획 세션에서 끝내고, 구현은 결정 사항만 들고 새 세션에서 시작하세요." }} accent="var(--orange)" />
                   <TipCard tip={{ title: "완료 조건을 첫 메시지에 고정하세요", body: "새 세션 첫 메시지에는 목표, 파일 범위, 완료 조건만 포함하면 컨텍스트 누적을 줄일 수 있습니다." }} accent="var(--orange)" />
+                  <PromptPair
+                    bad="전체적으로 개선해줘."
+                    good="이전 세션의 결정 사항만 이어받아 구현해줘. 범위는 관련 파일 2개로 제한해. 먼저 변경 계획 3줄을 말하고, 승인 후 수정해."
+                    reason="세션이 길어지는 핵심 원인은 예의 표현이 아니라 작업 범위가 넓은 상태로 실행되는 것입니다."
+                  />
+                </>
+              )}
+
+              {pattern.type === "BROAD_REQUEST" && isBroadRequestEvidence(pattern.evidence) && (
+                <>
+                  {pattern.evidence.requests.map((request, j) => (
+                    <PromptPair
+                      key={j}
+                      bad={request.original}
+                      good={request.improved}
+                      reason={request.reason}
+                    />
+                  ))}
+                  <TipCard tip={{ title: "요청을 4요소로 압축하세요", body: "목표, 수정 범위, 하지 말아야 할 일, 완료 조건을 먼저 정하면 AI가 전체 작업으로 확장하는 일을 줄일 수 있습니다." }} accent="var(--accent)" />
                 </>
               )}
             </div>
@@ -139,6 +184,11 @@ export function QuestionGuide({ patterns, scoreBreakdown }: Props) {
       <div className="card">
         <div className="card-title">AI 코딩 세션 효율 베스트 프랙티스</div>
         {GENERAL_TIPS.map((tip, i) => <TipCard key={i} tip={tip} />)}
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-title">작업 유형별 다음 요청 템플릿</div>
+        {PROMPT_TEMPLATES.map((tip, i) => <TipCard key={i} tip={tip} accent="var(--green)" />)}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import { WastePattern, DiagnosticResult, isContextBloatEvidence, isRetryStormEvidence, isToolThrashEvidence } from "./analyzer";
+import { WastePattern, DiagnosticResult, isContextBloatEvidence, isRetryStormEvidence, isToolThrashEvidence, isBroadRequestEvidence } from "./analyzer";
 import { ClaudeSection, estimateTokens, isHumanVisibleMessage } from "./parser";
 import { PROVIDER_CONFIGS, calculateCost, formatCost } from "./providers";
 
@@ -55,6 +55,8 @@ function prescribePattern(pattern: WastePattern, configMdContent: string, result
     case "SESSION_SCOPE_DRIFT":
     case "PHASE_MIXING":
       return prescribeSessionDiscipline(pattern, result, configMdContent, usageWindow);
+    case "BROAD_REQUEST":
+      return prescribeRequestCompression(pattern, result, configMdContent, usageWindow);
     default:
       return null;
   }
@@ -187,6 +189,8 @@ function getPatternImpactBasis(type: WastePattern["type"]): string {
       return "작업 종류 수와 긴 세션 턴 수 기반 추정";
     case "PHASE_MIXING":
       return "기획/구현 혼합 패턴 기반 추정";
+    case "BROAD_REQUEST":
+      return "넓은 요청 수 x 보수적 세션 확장 비용";
     default:
       return "패턴 기반 추정";
   }
@@ -236,8 +240,8 @@ function prescribeRetryStorm(pattern: WastePattern, result: DiagnosticResult, co
   }
 
   const rules = [
-    "동일한 요청이나 실패가 2회 반복되면 같은 답변을 반복하지 말고 원인을 요약한 뒤 다른 접근법을 선택한다.",
-    "실패가 계속되면 추가 실행 전에 사용자에게 현재 막힌 지점, 시도한 방법, 필요한 결정을 짧게 보고한다.",
+    "같은 도구나 같은 접근이 2회 실패하면 세 번째 실행 전에 원인, 시도한 방법, 다음 대안을 짧게 보고한다.",
+    "파일 없음, 권한 오류, 타입 오류는 같은 명령을 반복하지 말고 경로와 전제부터 확인한다.",
     "재시도 요청을 받으면 이전 시도와 다른 검증 기준을 먼저 정하고 진행한다.",
   ];
 
@@ -283,8 +287,8 @@ function prescribeSessionDiscipline(pattern: WastePattern, result: DiagnosticRes
   const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
   const rules = [
     "한 세션에는 하나의 목표만 수행한다. 새 목표가 나오면 현재 결과를 5줄 이내로 요약하고 새 세션을 권장한다.",
-    "기획, 구현, 검증/리뷰는 가능한 별도 세션으로 분리한다. 기획 세션의 긴 맥락을 구현 세션에 그대로 끌고 가지 않는다.",
-    "작업이 커지면 다음 단계로 넘어가기 전에 산출물, 남은 일, 완료 조건을 짧게 정리한다.",
+    "기획이 끝나고 구현으로 넘어갈 때는 결정 사항, 파일 범위, 완료 조건만 요약하고 새 세션을 권장한다.",
+    "구현이 끝나고 검증으로 넘어갈 때는 변경 파일과 실행할 테스트만 남기고 새 세션을 권장한다.",
   ];
 
   return buildRulesFix(
@@ -293,6 +297,30 @@ function prescribeSessionDiscipline(pattern: WastePattern, result: DiagnosticRes
     configMdContent,
     `${configFileName}에 세션 분리 규칙 적용`,
     "세션 범위 혼합으로 인한 토큰 누적을 줄이도록 작업 분리 규칙을 설정 파일에 추가합니다.",
+    rules,
+    buildPatternImpactComparison(pattern, result, usageWindow)
+  );
+}
+
+function prescribeRequestCompression(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
+  const provider = result.session.provider;
+  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const evidence = pattern.evidence;
+  const example = isBroadRequestEvidence(evidence) ? evidence.requests[0] : null;
+  const rules = [
+    "사용자 요청이 넓거나 모호하면 바로 실행하지 말고 목표, 수정 범위, 하지 말아야 할 일, 완료 조건 4요소로 재정리한다.",
+    "재정리한 요청을 사용자에게 먼저 보여주고 승인 후 진행한다.",
+    "전체적으로, 알아서, 좋게 같은 표현이 나오면 전체 수정으로 해석하지 말고 좁은 작업 단위와 검증 기준을 먼저 제안한다.",
+  ];
+
+  return buildRulesFix(
+    pattern,
+    provider,
+    configMdContent,
+    `${configFileName}에 사용자 요청 압축 도우미 적용`,
+    example
+      ? `넓은 요청을 실행 가능한 작업 단위로 바꾸도록 설정 파일에 압축 기준을 추가합니다. 예: "${example.improved}"`
+      : "넓고 모호한 요청을 실행 가능한 작업 단위로 바꾸도록 설정 파일에 압축 기준을 추가합니다.",
     rules,
     buildPatternImpactComparison(pattern, result, usageWindow)
   );

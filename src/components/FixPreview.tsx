@@ -29,6 +29,7 @@ export function FixPreview({ fix, onApply, applying }: Props) {
         <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 12 }}>
           {fix.description}
         </div>
+        <MetaRow fix={fix} />
         <div style={{ fontSize: 12, color: "var(--muted)" }}>
           {fix.action.steps.map((step, i) => (
             <div key={i} style={{ marginBottom: 4 }}>
@@ -48,6 +49,7 @@ export function FixPreview({ fix, onApply, applying }: Props) {
         <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 12 }}>
           {fix.description}
         </div>
+        <MetaRow fix={fix} />
         <div style={{ marginBottom: 12 }}>
           <DiffViewer diff={fix.action.diff} maxLines={80} />
         </div>
@@ -88,6 +90,7 @@ export function FixPreview({ fix, onApply, applying }: Props) {
       <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 12 }}>
         {fix.description}
       </div>
+      <MetaRow fix={fix} confidence={confidence} />
 
       {/* 예상 절약 효과 */}
       <div
@@ -160,6 +163,47 @@ export function FixPreview({ fix, onApply, applying }: Props) {
       </button>
     </div>
   );
+}
+
+function MetaRow({ fix, confidence }: { fix: Fix; confidence?: "HIGH" | "MEDIUM" | "LOW" }) {
+  const risk = confidence === "LOW" ? "수동 검토" : confidence === "HIGH" ? "낮음" : "중간";
+  const target = fix.action.kind === "edit_config_md"
+    ? fix.action.provider === "gemini" ? "GEMINI.md" : fix.action.provider === "codex" ? "AGENTS.md" : "CLAUDE.md"
+    : "질문 방식";
+
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+      <Badge label="목적" value={purposeLabel(fix.patternType)} />
+      <Badge label="대상" value={target} />
+      <Badge label="위험도" value={risk} />
+    </div>
+  );
+}
+
+function Badge({ label, value }: { label: string; value: string }) {
+  return (
+    <span style={{ fontSize: 11, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 999, padding: "4px 8px", background: "var(--surface2)" }}>
+      {label}: <strong style={{ color: "var(--text)" }}>{value}</strong>
+    </span>
+  );
+}
+
+function purposeLabel(type: Fix["patternType"]): string {
+  switch (type) {
+    case "CONTEXT_BLOAT":
+      return "상시 지침 비용 감소";
+    case "TOOL_THRASH":
+      return "반복 실패 중단";
+    case "SESSION_SCOPE_DRIFT":
+    case "PHASE_MIXING":
+      return "세션 분리";
+    case "BROAD_REQUEST":
+      return "요청 압축";
+    case "RETRY_STORM":
+      return "재시도 억제";
+    default:
+      return "낭비 감소";
+  }
 }
 
 function ImpactBox({ label, value }: { label: string; value: string }) {
