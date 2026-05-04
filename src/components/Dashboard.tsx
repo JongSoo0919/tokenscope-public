@@ -2,16 +2,16 @@ import { useState } from "react";
 import { DiagnosticResult } from "../lib/analyzer";
 
 const TIPS = [
-  "CLAUDE.md는 매 요청마다 시스템 프롬프트로 주입됩니다. 길수록 매 요청 비용이 그대로 올라갑니다.",
+  "CLAUDE.md/AGENTS.md는 없애는 대상이 아니라 상시 로딩할 가치가 있는 규칙만 남기는 대상입니다.",
   "캐시 적중률을 높이려면 대화 초반에 필요한 파일을 모두 Read하고, 이후엔 불필요한 컨텍스트 변경을 줄이세요.",
   "같은 도구로 3회 이상 실패하면 접근법을 바꾸도록 CLAUDE.md에 명시하면 도구 실패율을 크게 줄일 수 있습니다.",
   "세션이 길어질수록 입력 토큰이 누적됩니다. 새 작업은 새 세션에서 시작하는 것이 비용 면에서 효율적입니다.",
-  "CLAUDE.md는 1,500자 이내로 유지하세요. 불필요한 예시·중복 내용을 제거하면 매 요청마다 토큰이 절약됩니다.",
-  "반복적인 재시도는 지침이 불명확하다는 신호입니다. CLAUDE.md에 더 구체적인 단계별 지침을 추가하세요.",
+  "긴 설정 파일은 필수 지침, 자주 쓰는 지침, 상황별 지침으로 나누면 체감 사용량을 줄일 수 있습니다.",
+  "반복적인 재시도는 지침이 불명확하다는 신호입니다. 설정 파일에 더 구체적인 단계별 지침을 추가하세요.",
   "cache_creation 비용은 cache_read보다 높습니다. 캐시된 컨텍스트를 여러 번 재활용하는 구조로 작업하세요.",
-  "도구 오류가 많다면 입력값 검증 지침을 CLAUDE.md에 추가하는 것이 효과적입니다.",
+  "도구 오류가 많다면 입력값 검증 지침을 설정 파일에 추가하는 것이 효과적입니다.",
   "출력 토큰보다 입력 토큰이 훨씬 많다면 컨텍스트가 너무 비대한 신호입니다. 관련 없는 정보를 줄이세요.",
-  "CLAUDE.md의 각 섹션을 정기적으로 검토하고 사용하지 않는 지침은 과감히 삭제하세요.",
+  "설정 파일의 각 섹션을 정기적으로 검토하고, 사용 빈도가 낮은 지침은 삭제보다 온디맨드 문서로 분리하세요.",
   "하나의 세션에서 무관한 작업을 섞으면 캐시 효율이 떨어집니다. 주제별로 세션을 분리하세요.",
 ];
 
@@ -27,6 +27,39 @@ function Bar({ value, color }: { value: number; color: string }) {
   );
 }
 
+function PieChart({ segments }: { segments: { label: string; value: number; color: string }[] }) {
+  const total = Math.max(1, segments.reduce((sum, s) => sum + s.value, 0));
+  let cursor = 0;
+  const gradient = segments.map(segment => {
+    const start = cursor;
+    const end = cursor + (segment.value / total) * 100;
+    cursor = end;
+    return `${segment.color} ${start}% ${end}%`;
+  }).join(", ");
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+      <div style={{
+        width: 132,
+        height: 132,
+        borderRadius: "50%",
+        background: `conic-gradient(${gradient})`,
+        border: "1px solid var(--border)",
+        flexShrink: 0,
+      }} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 7, minWidth: 0 }}>
+        {segments.map((s, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: s.color, flexShrink: 0 }} />
+            <span style={{ color: "var(--text)" }}>{s.label}</span>
+            <span style={{ color: "var(--muted)" }}>{s.value}개</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function decodeProjectName(raw: string): string {
   try {
     return decodeURIComponent(raw.replace(/-/g, "/")).split("/").filter(Boolean).pop() ?? raw;
@@ -35,6 +68,13 @@ function decodeProjectName(raw: string): string {
 
 interface Props {
   diagnostics: Map<string, DiagnosticResult>;
+}
+
+interface WasteCandidate {
+  title: string;
+  detail: string;
+  tokens: number;
+  severity: string;
 }
 
 export function Dashboard({ diagnostics }: Props) {
@@ -57,14 +97,43 @@ export function Dashboard({ diagnostics }: Props) {
   const avg = (fn: (r: DiagnosticResult) => number) =>
     results.reduce((s, r) => s + fn(r), 0) / count;
 
+  const latestTime = Math.max(...results.map(r => getSessionTime(r)).filter(Number.isFinite));
+  const windowStart = Number.isFinite(latestTime) ? latestTime - 5 * 60 * 60 * 1000 : 0;
+  const recentResults = results.filter(r => {
+    const t = getSessionTime(r);
+    return Number.isFinite(latestTime) && Number.isFinite(t) ? t >= windowStart && t <= latestTime : false;
+  });
+  const fiveHourResults = recentResults.length > 0 ? recentResults : results.slice(0, 5);
+  const fiveHourCount = fiveHourResults.length;
+  const recentAvg = Math.round(fiveHourResults.reduce((s, r) => s + r.healthScore, 0) / Math.max(1, fiveHourCount));
+  const recentTool = fiveHourResults.reduce((s, r) => s + r.scoreBreakdown.toolSuccessRate, 0) / Math.max(1, fiveHourCount);
+  const recentRetry = fiveHourResults.reduce((s, r) => s + r.scoreBreakdown.retryHealth, 0) / Math.max(1, fiveHourCount);
+  const recentAction = fiveHourResults.reduce((s, r) => s + r.scoreBreakdown.actionFocus, 0) / Math.max(1, fiveHourCount);
+  const recentConfig = fiveHourResults.reduce((s, r) => s + r.scoreBreakdown.claudeMdHealth, 0) / Math.max(1, fiveHourCount);
+  const recentRiskCount = fiveHourResults.filter(r => r.healthScore < 40).length;
+  const verdict = buildVerdict(recentAvg, recentRiskCount, recentTool, recentRetry, recentAction);
+  const verdictReasons = buildVerdictReasons(fiveHourResults, recentTool, recentRetry, recentAction, recentConfig);
+  const topWaste = buildTopWaste(fiveHourResults);
+
   const avgScore  = Math.round(avg(r => r.healthScore));
   const avgCache  = avg(r => r.scoreBreakdown.cacheEfficiency);
   const avgTool   = avg(r => r.scoreBreakdown.toolSuccessRate);
   const avgCtx    = avg(r => r.scoreBreakdown.contextDensity);
   const avgClaude = avg(r => r.scoreBreakdown.claudeMdHealth);
   const avgRetry  = avg(r => r.scoreBreakdown.retryHealth);
+  const avgAction = avg(r => r.scoreBreakdown.actionFocus);
   const totalWasted   = results.reduce((s, r) => s + r.totalWastedTokens, 0);
   const criticalCount = results.filter(r => r.healthScore < 40).length;
+  const providerSegments = ["claude", "gemini", "codex"].map((provider, i) => ({
+    label: provider,
+    value: results.filter(r => r.session.provider === provider).length,
+    color: ["var(--accent)", "var(--green)", "var(--orange)"][i],
+  })).filter(s => s.value > 0);
+  const healthSegments = [
+    { label: "양호", value: results.filter(r => r.healthScore >= 70).length, color: "var(--green)" },
+    { label: "주의", value: results.filter(r => r.healthScore >= 40 && r.healthScore < 70).length, color: "var(--orange)" },
+    { label: "위험", value: results.filter(r => r.healthScore < 40).length, color: "var(--red)" },
+  ].filter(s => s.value > 0);
 
   // Strengths / weaknesses with detail
   const strengths: { title: string; detail: string }[] = [];
@@ -85,18 +154,18 @@ export function Dashboard({ diagnostics }: Props) {
   });
   else if (avgTool < 70) weaknesses.push({
     title: `도구 실패율 ${(100 - avgTool).toFixed(0)}% — 높음`,
-    tip: "CLAUDE.md에 도구 3회 실패 시 대안 전략을 명시하고, 절대경로 사용을 지침에 추가하세요.",
+    tip: "설정 파일에 도구 3회 실패 시 대안 전략을 명시하고, 절대경로 사용을 지침에 추가하세요.",
   });
 
   if (avgClaude >= 80) strengths.push({
-    title: "CLAUDE.md 경량 — 양호",
-    detail: "CLAUDE.md가 간결하게 관리되어 매 요청 오버헤드가 낮습니다.",
+    title: "설정 파일 상시 비용 — 낮음",
+    detail: "항상 읽히는 지침이 간결하게 관리되어 매 요청 오버헤드가 낮습니다.",
   });
   else if (avgClaude < 50) {
     const estimatedTokens = Math.round((1 - avgClaude / 100) * 3000);
     weaknesses.push({
-      title: `CLAUDE.md 약 ${estimatedTokens}+ 토큰 — 과부하`,
-      tip: "사용하지 않는 섹션을 삭제하고 긴 예시를 원칙으로 압축하세요. 목표: 1,500자 이내.",
+      title: `설정 파일 약 ${estimatedTokens}+ 토큰 — 상시 비용 큼`,
+      tip: "필수 지침은 유지하고, 특정 상황에서만 필요한 긴 예시와 절차는 별도 Skill/문서로 분리하세요.",
     });
   }
 
@@ -106,7 +175,7 @@ export function Dashboard({ diagnostics }: Props) {
   });
   else if (avgRetry < 60) weaknesses.push({
     title: "반복 재시도 다수 감지",
-    tip: "CLAUDE.md에 명확한 단계별 지침을 추가하고, 실패 시 다른 접근법을 시도하도록 명시하세요.",
+    tip: "설정 파일에 명확한 단계별 지침을 추가하고, 실패 시 다른 접근법을 시도하도록 명시하세요.",
   });
 
   if (avgCtx >= 70) strengths.push({
@@ -118,10 +187,65 @@ export function Dashboard({ diagnostics }: Props) {
     tip: "구체적인 출력 형식과 기대 길이를 요청에 명시하면 같은 비용으로 더 많은 정보를 얻을 수 있습니다.",
   });
 
+  if (avgAction >= 85) strengths.push({
+    title: "세션 집중도 양호",
+    detail: "대부분의 세션이 하나의 작업 흐름 안에서 끝나고 있습니다.",
+  });
+  else if (avgAction < 70) weaknesses.push({
+    title: "세션 범위 혼합 감지",
+    tip: "기획, 구현, 검증을 같은 세션에서 이어가지 말고 단계별 새 세션으로 분리하세요.",
+  });
+
   const chartData = results.slice(0, 10).reverse();
 
   return (
     <div>
+      <div className="card" style={{ marginBottom: 16, borderColor: verdict.color }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div style={{ minWidth: 260, flex: 1 }}>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>최근 5시간 기준</div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: verdict.color, lineHeight: 1.2 }}>
+              {verdict.label}
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.6, marginTop: 8 }}>
+              {verdict.message}
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(100px, 1fr))", gap: 8, minWidth: 320 }}>
+            <MiniStat label="평균 건강 점수" value={`${recentAvg}점`} color={scoreColor(recentAvg)} />
+            <MiniStat label="분석 세션" value={`${fiveHourCount}개`} color="var(--accent)" />
+            <MiniStat label="위험 세션" value={`${recentRiskCount}개`} color={recentRiskCount > 0 ? "var(--red)" : "var(--green)"} />
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)", marginBottom: 8 }}>주의 근거</div>
+            {verdictReasons.map((reason, i) => (
+              <div key={i} style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55, marginBottom: 5 }}>
+                - {reason}
+              </div>
+            ))}
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)", marginBottom: 8 }}>가장 큰 낭비 3개</div>
+            {topWaste.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--green)" }}>최근 범위에서 큰 낭비 패턴이 없습니다.</div>
+            ) : topWaste.map((item, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 8 }}>
+                <div style={{ width: 18, height: 18, borderRadius: 9, background: "var(--surface2)", color: "var(--muted)", fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: "var(--text)", fontWeight: 700 }}>{item.title}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.45 }}>
+                    {item.detail} · 약 {item.tokens.toLocaleString("ko-KR")} 토큰
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {/* 통계 헤더 */}
       <div className="stat-grid" style={{ marginBottom: 16 }}>
         <div className="stat-box">
@@ -133,7 +257,7 @@ export function Dashboard({ diagnostics }: Props) {
           <div className="stat-value blue">{count}개</div>
         </div>
         <div className="stat-box">
-          <div className="stat-label">낭비 토큰 (추정)</div>
+          <div className="stat-label">절약 후보 토큰</div>
           <div className="stat-value orange">{totalWasted.toLocaleString()}</div>
         </div>
         <div className="stat-box">
@@ -143,6 +267,17 @@ export function Dashboard({ diagnostics }: Props) {
       </div>
 
       {/* 건강 점수 차트 */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+        <div className="card" style={{ marginBottom: 0 }}>
+          <div className="card-title">공급자 분포</div>
+          <PieChart segments={providerSegments} />
+        </div>
+        <div className="card" style={{ marginBottom: 0 }}>
+          <div className="card-title">건강 등급 분포</div>
+          <PieChart segments={healthSegments} />
+        </div>
+      </div>
+
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-title">세션별 건강 점수 (최근 {chartData.length}개)</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
@@ -170,10 +305,11 @@ export function Dashboard({ diagnostics }: Props) {
           { label: "캐시 효율",     value: avgCache },
           { label: "도구 성공률",   value: avgTool },
           { label: "컨텍스트 밀도", value: avgCtx },
-          { label: "CLAUDE.md",    value: avgClaude },
+          { label: "설정 파일",    value: avgClaude },
           { label: "반복 억제",     value: avgRetry },
+          { label: "세션 집중도",   value: avgAction },
         ].map((m, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: i < 4 ? 9 : 0 }}>
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: i < 5 ? 9 : 0 }}>
             <div style={{ width: 96, fontSize: 11, color: "var(--muted)", flexShrink: 0 }}>{m.label}</div>
             <Bar value={m.value} color={scoreColor(m.value)} />
             <div style={{ width: 32, fontSize: 12, fontWeight: 700, color: scoreColor(m.value), textAlign: "right", flexShrink: 0 }}>
@@ -193,7 +329,7 @@ export function Dashboard({ diagnostics }: Props) {
         fontSize: 13,
         lineHeight: 1.65,
       }}>
-        <span style={{ color: "var(--accent)", fontWeight: 700, marginRight: 8 }}>💡 오늘의 절약 팁</span>
+        <span style={{ color: "var(--accent)", fontWeight: 700, marginRight: 8 }}>오늘의 절약 팁</span>
         <span style={{ color: "var(--text)" }}>{TIPS[tipIdx]}</span>
       </div>
 
@@ -253,4 +389,80 @@ export function Dashboard({ diagnostics }: Props) {
       </div>
     </div>
   );
+}
+
+function MiniStat({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 6, padding: "10px 12px" }}>
+      <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 17, fontWeight: 800, color }}>{value}</div>
+    </div>
+  );
+}
+
+function getSessionTime(result: DiagnosticResult): number {
+  const end = new Date(result.session.endTime).getTime();
+  if (Number.isFinite(end)) return end;
+  const start = new Date(result.session.startTime).getTime();
+  return Number.isFinite(start) ? start : 0;
+}
+
+function buildVerdict(avgScore: number, riskCount: number, toolScore: number, retryScore: number, actionScore: number) {
+  if (avgScore >= 75 && riskCount === 0 && toolScore >= 80 && retryScore >= 80 && actionScore >= 70) {
+    return {
+      label: "잘 쓰는 중",
+      color: "var(--green)",
+      message: "세션 목표가 비교적 명확하고 반복 낭비가 적습니다. 지금 방식은 유지하되 작업이 바뀔 때만 새 세션으로 나누면 됩니다.",
+    };
+  }
+  if (avgScore < 40 || riskCount > 0 || toolScore < 55 || retryScore < 55) {
+    return {
+      label: "낭비 심함",
+      color: "var(--red)",
+      message: "지금은 더 긴 지침을 추가하기보다 세션을 나누고 실패 중단 기준을 먼저 잡아야 합니다.",
+    };
+  }
+  return {
+    label: "주의",
+    color: "var(--orange)",
+    message: "토큰을 많이 쓰는 것보다 같은 맥락을 오래 끌고 가는 방식에서 손실이 생기고 있습니다.",
+  };
+}
+
+function buildVerdictReasons(results: DiagnosticResult[], toolScore: number, retryScore: number, actionScore: number, configScore: number): string[] {
+  const mixed = results.filter(r => r.patterns.some(p => p.type === "SESSION_SCOPE_DRIFT" || p.type === "PHASE_MIXING")).length;
+  const toolFailRate = Math.max(0, 100 - toolScore);
+  const configTokens = Math.round((1 - configScore / 100) * 3000);
+  const reasons = [
+    `${results.length}개 세션 평균 건강 점수는 ${Math.round(results.reduce((s, r) => s + r.healthScore, 0) / Math.max(1, results.length))}점입니다.`,
+    mixed > 0
+      ? `최근 범위 ${results.length}개 중 ${mixed}개에서 기획/구현/검증 흐름이 섞였습니다.`
+      : "최근 범위에서 큰 세션 범위 혼합은 적습니다.",
+    toolFailRate >= 10
+      ? `도구 실패율이 약 ${toolFailRate.toFixed(0)}%입니다. 같은 도구 재시도 기준을 정하세요.`
+      : "도구 실패율은 낮은 편입니다.",
+  ];
+
+  if (retryScore < 80) reasons.push("반복 요청 신호가 있습니다. 실패 조건과 중단 기준을 먼저 적는 편이 좋습니다.");
+  if (actionScore < 70) reasons.push("세션 집중도가 낮습니다. 기획, 구현, 검증을 별도 세션으로 나누세요.");
+  if (configScore < 60) reasons.push(`설정 파일 상시 로딩 비용이 약 ${configTokens.toLocaleString("ko-KR")}토큰으로 큽니다.`);
+
+  return reasons.slice(0, 3);
+}
+
+function buildTopWaste(results: DiagnosticResult[]): WasteCandidate[] {
+  return results.flatMap(result => result.patterns.map(pattern => ({
+    title: pattern.title,
+    detail: decodeProjectName(result.session.project),
+    tokens: pattern.estimatedWastedTokens,
+    severity: pattern.severity,
+  })))
+    .sort((a, b) => b.tokens - a.tokens || severityRank(b.severity) - severityRank(a.severity))
+    .slice(0, 3);
+}
+
+function severityRank(severity: string): number {
+  if (severity === "HIGH") return 3;
+  if (severity === "MEDIUM") return 2;
+  return 1;
 }

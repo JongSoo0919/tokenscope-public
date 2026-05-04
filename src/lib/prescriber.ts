@@ -1,5 +1,5 @@
 import { WastePattern, DiagnosticResult, isContextBloatEvidence, isRetryStormEvidence, isToolThrashEvidence } from "./analyzer";
-import { ClaudeSection, estimateTokens } from "./parser";
+import { ClaudeSection, estimateTokens, isHumanVisibleMessage } from "./parser";
 import { PROVIDER_CONFIGS, calculateCost, formatCost } from "./providers";
 
 export interface Fix {
@@ -14,7 +14,21 @@ export interface Fix {
     savedPercentage: number;
     savedCost: number;
     savedCostFormatted: string;
+    basis: string;
+    confidence: "HIGH" | "MEDIUM" | "LOW";
+    sessionTotalTokens: number;
+    sessionSavedPercentage: number;
+    fiveHourTotalTokens?: number;
+    fiveHourSavedPercentage?: number;
+    averageUserTurnTokens?: number;
+    equivalentUserTurns?: number;
   };
+}
+
+export interface UsageWindowContext {
+  fiveHourTotalTokens: number;
+  fiveHourUserTurns: number;
+  analyzedSessionCount: number;
 }
 
 export type FixAction =
@@ -26,27 +40,30 @@ export interface DiffLine {
   content: string;
 }
 
-export function prescribe(result: DiagnosticResult, configMdContent: string): Fix[] {
-  return result.patterns.map(p => prescribePattern(p, configMdContent, result)).filter((f): f is Fix => f !== null);
+export function prescribe(result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix[] {
+  return result.patterns.map(p => prescribePattern(p, configMdContent, result, usageWindow)).filter((f): f is Fix => f !== null);
 }
 
-function prescribePattern(pattern: WastePattern, configMdContent: string, result: DiagnosticResult): Fix | null {
+function prescribePattern(pattern: WastePattern, configMdContent: string, result: DiagnosticResult, usageWindow?: UsageWindowContext): Fix | null {
   switch (pattern.type) {
     case "CONTEXT_BLOAT":
-      return prescribeContextBloat(pattern, configMdContent, result);
+      return prescribeContextBloat(pattern, configMdContent, result, usageWindow);
     case "RETRY_STORM":
-      return prescribeRetryStorm(pattern, result.session.provider);
+      return prescribeRetryStorm(pattern, result, configMdContent, usageWindow);
     case "TOOL_THRASH":
-      return prescribeToolThrash(pattern, result.session.provider);
+      return prescribeToolThrash(pattern, result, configMdContent, usageWindow);
+    case "SESSION_SCOPE_DRIFT":
+    case "PHASE_MIXING":
+      return prescribeSessionDiscipline(pattern, result, configMdContent, usageWindow);
     default:
       return null;
   }
 }
 
-function prescribeContextBloat(pattern: WastePattern, configMdContent: string, result: DiagnosticResult): Fix {
+function prescribeContextBloat(pattern: WastePattern, configMdContent: string, result: DiagnosticResult, usageWindow?: UsageWindowContext): Fix {
   const evidence = pattern.evidence;
   const provider = result.session.provider;
-  const configFileName = provider === "gemini" ? "GEMINI.md" : "CLAUDE.md";
+  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
 
   if (!isContextBloatEvidence(evidence)) {
     return buildInfoFix(pattern, [`${configFileName} 내용을 검토하고 불필요한 섹션을 제거하세요.`]);
@@ -58,7 +75,7 @@ function prescribeContextBloat(pattern: WastePattern, configMdContent: string, r
 
   const beforeTokens = estimateTokens(configMdContent);
   const afterTokens = estimateTokens(trimmed);
-  const msgCount = Math.max(1, result.session.messages.length);
+  const msgCount = Math.max(1, result.session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length);
   const beforeTotal = beforeTokens * msgCount;
   const afterTotal = afterTokens * msgCount;
   const savedTokens = beforeTotal - afterTotal;
@@ -69,8 +86,8 @@ function prescribeContextBloat(pattern: WastePattern, configMdContent: string, r
 
   return {
     patternType: "CONTEXT_BLOAT",
-    title: `${configFileName} 슬림화`,
-    description: `가장 무거운 ${topOffenders.length}개 섹션을 압축하거나 제거합니다.`,
+    title: `${configFileName} 상시 지침 정리`,
+    description: `가장 무거운 ${topOffenders.length}개 섹션에서 항상 필요한 규칙만 남기고 상황별 지침은 분리합니다.`,
     action: {
       kind: "edit_config_md",
       provider,
@@ -78,15 +95,101 @@ function prescribeContextBloat(pattern: WastePattern, configMdContent: string, r
       suggestedContent: trimmed,
       diff,
     },
-    beforeAfterComparison: {
-      beforeTokens: beforeTotal,
-      afterTokens: afterTotal,
+    beforeAfterComparison: buildImpactComparison(
+      result,
       savedTokens,
+      beforeTotal,
+      afterTotal,
       savedPercentage,
       savedCost,
       savedCostFormatted,
-    },
+      "설정 파일 길이 x 현재 세션 사용자 요청 수",
+      "MEDIUM",
+      usageWindow
+    ),
   };
+}
+
+function buildImpactComparison(
+  result: DiagnosticResult,
+  savedTokens: number,
+  beforeTokens: number,
+  afterTokens: number,
+  savedPercentage: number,
+  savedCost: number,
+  savedCostFormatted: string,
+  basis: string,
+  confidence: "HIGH" | "MEDIUM" | "LOW",
+  usageWindow?: UsageWindowContext
+): NonNullable<Fix["beforeAfterComparison"]> {
+  const sessionTotalTokens = getSessionTotalTokens(result);
+  const userTurns = Math.max(1, result.session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length);
+  const windowTokens = usageWindow?.fiveHourTotalTokens ?? sessionTotalTokens;
+  const windowTurns = usageWindow?.fiveHourUserTurns ?? userTurns;
+  const averageUserTurnTokens = Math.round(windowTokens / Math.max(1, windowTurns));
+
+  return {
+    beforeTokens,
+    afterTokens,
+    savedTokens,
+    savedPercentage,
+    savedCost,
+    savedCostFormatted,
+    basis,
+    confidence,
+    sessionTotalTokens,
+    sessionSavedPercentage: sessionTotalTokens > 0 ? Math.round((savedTokens / sessionTotalTokens) * 1000) / 10 : 0,
+    fiveHourTotalTokens: windowTokens,
+    fiveHourSavedPercentage: windowTokens > 0 ? Math.round((savedTokens / windowTokens) * 1000) / 10 : 0,
+    averageUserTurnTokens,
+    equivalentUserTurns: averageUserTurnTokens > 0 ? Math.round((savedTokens / averageUserTurnTokens) * 10) / 10 : 0,
+  };
+}
+
+function buildPatternImpactComparison(
+  pattern: WastePattern,
+  result: DiagnosticResult,
+  usageWindow?: UsageWindowContext
+): NonNullable<Fix["beforeAfterComparison"]> {
+  const savedTokens = Math.max(0, pattern.estimatedWastedTokens);
+  const beforeTokens = getSessionTotalTokens(result);
+  const afterTokens = Math.max(0, beforeTokens - savedTokens);
+  const savedPercentage = beforeTokens > 0 ? Math.round((savedTokens / beforeTokens) * 100) : 0;
+  const provider = result.session.provider;
+  const savedCost = calculateCost(provider, savedTokens, 0, 0);
+  const savedCostFormatted = formatCost(savedCost, PROVIDER_CONFIGS[provider].tokenPricing.currency);
+
+  return buildImpactComparison(
+    result,
+    savedTokens,
+    beforeTokens,
+    afterTokens,
+    savedPercentage,
+    savedCost,
+    savedCostFormatted,
+    getPatternImpactBasis(pattern.type),
+    "LOW",
+    usageWindow
+  );
+}
+
+function getSessionTotalTokens(result: DiagnosticResult): number {
+  return result.session.totalInputTokens + result.session.totalOutputTokens + result.session.totalCacheReadTokens;
+}
+
+function getPatternImpactBasis(type: WastePattern["type"]): string {
+  switch (type) {
+    case "RETRY_STORM":
+      return "반복 요청 수 x 보수적 재시도 비용";
+    case "TOOL_THRASH":
+      return "연속 실패 도구 호출 수 x 보수적 실패 비용";
+    case "SESSION_SCOPE_DRIFT":
+      return "작업 종류 수와 긴 세션 턴 수 기반 추정";
+    case "PHASE_MIXING":
+      return "기획/구현 혼합 패턴 기반 추정";
+    default:
+      return "패턴 기반 추정";
+  }
 }
 
 function trimConfigMd(content: string, topOffenders: ClaudeSection[]): string {
@@ -113,7 +216,7 @@ function trimConfigMd(content: string, topOffenders: ClaudeSection[]): string {
       } else if (offenderTokens < 100) {
         result.push(line);
       } else if (!result.some(r => r.includes("# [압축됨]") || r.includes("[TRIMMED]"))) {
-        result.push("# [이 섹션은 토큰 절약을 위해 압축되었습니다. 내용을 검토하고 핵심만 남기세요.]");
+        result.push("# [온디맨드 분리 후보] 항상 필요한 핵심만 남기고 상세 지침은 별도 Skill/문서로 옮기세요.");
       }
     } else {
       result.push(line);
@@ -123,47 +226,141 @@ function trimConfigMd(content: string, topOffenders: ClaudeSection[]): string {
   return result.join("\n");
 }
 
-function prescribeRetryStorm(pattern: WastePattern, provider: string): Fix {
+function prescribeRetryStorm(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
   const evidence = pattern.evidence;
-  const configFileName = provider === "gemini" ? "GEMINI.md" : "CLAUDE.md";
+  const provider = result.session.provider;
+  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
 
   if (!isRetryStormEvidence(evidence)) {
     return buildInfoFix(pattern, ["반복 요청 패턴을 검토하세요."]);
   }
 
-  const steps = [
-    `감지된 반복 메시지 ${evidence.repeatedMessages.length}개:`,
-    ...evidence.repeatedMessages.slice(0, 3).map(
-      r => `  • "${r.text.slice(0, 60)}${r.text.length > 60 ? "..." : ""}" (${r.count}회 반복)`
-    ),
-    "",
-    "권장 조치:",
-    `1. ${configFileName}에 해당 작업에 대한 명확한 지침을 추가하세요.`,
-    "2. 에러 발생 시 다른 전략을 시도하도록 유도하는 문구를 추가하세요.",
-    '예시: "작업이 3회 실패하면 다른 접근법을 사용하세요."',
+  const rules = [
+    "동일한 요청이나 실패가 2회 반복되면 같은 답변을 반복하지 말고 원인을 요약한 뒤 다른 접근법을 선택한다.",
+    "실패가 계속되면 추가 실행 전에 사용자에게 현재 막힌 지점, 시도한 방법, 필요한 결정을 짧게 보고한다.",
+    "재시도 요청을 받으면 이전 시도와 다른 검증 기준을 먼저 정하고 진행한다.",
   ];
 
-  return buildInfoFix(pattern, steps);
+  return buildRulesFix(
+    pattern,
+    provider,
+    configMdContent,
+    `${configFileName}에 반복 재시도 방지 규칙 적용`,
+    `감지된 반복 메시지 ${evidence.repeatedMessages.length}개를 줄이도록 재시도 중단 기준을 설정 파일에 추가합니다.`,
+    rules,
+    buildPatternImpactComparison(pattern, result, usageWindow)
+  );
 }
 
-function prescribeToolThrash(pattern: WastePattern, provider: string): Fix {
+function prescribeToolThrash(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
   const evidence = pattern.evidence;
-  const configFileName = provider === "gemini" ? "GEMINI.md" : "CLAUDE.md";
+  const provider = result.session.provider;
+  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
 
   if (!isToolThrashEvidence(evidence)) {
     return buildInfoFix(pattern, ["도구 사용 패턴을 검토하세요."]);
   }
 
-  const steps = [
-    `"${evidence.toolName}" 도구가 연속 ${evidence.consecutiveErrors}회 실패했습니다.`,
-    "",
-    "권장 조치:",
-    `1. ${configFileName}에 "${evidence.toolName}" 실패 시 대체 전략을 명시하세요.`,
-    "2. 동일 도구를 3회 이상 재시도하지 않도록 지침을 추가하세요.",
-    `예시: "같은 도구로 3회 실패 시 다른 방법을 시도하거나 사용자에게 보고하세요."`,
+  const rules = [
+    `"${evidence.toolName}" 도구가 2회 실패하면 입력값과 경로를 재검증하고, 3회째부터는 같은 방식으로 재호출하지 않는다.`,
+    "도구 실패가 반복되면 대체 도구, 더 작은 단위 실행, 또는 사용자 확인 중 하나로 전환한다.",
+    "명령 실행 전 필요한 파일/디렉터리/권한이 맞는지 먼저 확인한다.",
   ];
 
-  return buildInfoFix(pattern, steps);
+  return buildRulesFix(
+    pattern,
+    provider,
+    configMdContent,
+    `${configFileName}에 도구 실패 대응 규칙 적용`,
+    `"${evidence.toolName}" 연속 실패를 줄이도록 도구 재시도 한계와 대체 전략을 설정 파일에 추가합니다.`,
+    rules,
+    buildPatternImpactComparison(pattern, result, usageWindow)
+  );
+}
+
+function prescribeSessionDiscipline(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
+  const provider = result.session.provider;
+  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const rules = [
+    "한 세션에는 하나의 목표만 수행한다. 새 목표가 나오면 현재 결과를 5줄 이내로 요약하고 새 세션을 권장한다.",
+    "기획, 구현, 검증/리뷰는 가능한 별도 세션으로 분리한다. 기획 세션의 긴 맥락을 구현 세션에 그대로 끌고 가지 않는다.",
+    "작업이 커지면 다음 단계로 넘어가기 전에 산출물, 남은 일, 완료 조건을 짧게 정리한다.",
+  ];
+
+  return buildRulesFix(
+    pattern,
+    provider,
+    configMdContent,
+    `${configFileName}에 세션 분리 규칙 적용`,
+    "세션 범위 혼합으로 인한 토큰 누적을 줄이도록 작업 분리 규칙을 설정 파일에 추가합니다.",
+    rules,
+    buildPatternImpactComparison(pattern, result, usageWindow)
+  );
+}
+
+function buildRulesFix(
+  pattern: WastePattern,
+  provider: string,
+  configMdContent: string,
+  title: string,
+  description: string,
+  rules: string[],
+  beforeAfterComparison?: Fix["beforeAfterComparison"]
+): Fix {
+  const suggestedContent = upsertTokenScopeRules(configMdContent, rules);
+  return {
+    patternType: pattern.type,
+    title,
+    description,
+    action: {
+      kind: "edit_config_md",
+      provider,
+      originalContent: configMdContent,
+      suggestedContent,
+      diff: buildDiff(configMdContent, suggestedContent),
+    },
+    beforeAfterComparison,
+  };
+}
+
+function upsertTokenScopeRules(content: string, rules: string[]): string {
+  const heading = "## TokenScope 토큰 절약 규칙";
+  const existing = content.trim();
+  const previousRules = extractTokenScopeRules(existing, heading);
+  const mergedRules = Array.from(new Set([...previousRules, ...rules]));
+  const section = [
+    heading,
+    ...mergedRules.map(rule => `- ${rule}`),
+  ].join("\n");
+  const withoutOldSection = removeTokenScopeRules(existing, heading);
+  return `${withoutOldSection ? `${withoutOldSection}\n\n` : ""}${section}\n`;
+}
+
+function extractTokenScopeRules(content: string, heading: string): string[] {
+  const lines = content.split("\n");
+  const start = lines.findIndex(line => line.trim() === heading);
+  if (start < 0) return [];
+  const rules: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("## ")) break;
+    if (line.trim().startsWith("- ")) rules.push(line.trim().slice(2).trim());
+  }
+  return rules;
+}
+
+function removeTokenScopeRules(content: string, heading: string): string {
+  const lines = content.split("\n");
+  const start = lines.findIndex(line => line.trim() === heading);
+  if (start < 0) return content.trim();
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].startsWith("## ")) {
+      end = i;
+      break;
+    }
+  }
+  return [...lines.slice(0, start), ...lines.slice(end)].join("\n").trim();
 }
 
 function buildInfoFix(pattern: WastePattern, steps: string[]): Fix {

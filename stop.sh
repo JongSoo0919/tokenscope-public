@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 PID_FILE="/tmp/tokenscope.pid"
+PORTS="1420 1421"
 
 if [ -f "$PID_FILE" ]; then
   PID=$(cat "$PID_FILE")
@@ -24,3 +25,11 @@ else
     echo "[tokenscope] 실행 중인 프로세스를 찾을 수 없습니다"
   fi
 fi
+
+for PORT in $PORTS; do
+  PORT_PIDS=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
+  if [ -n "$PORT_PIDS" ]; then
+    echo "[tokenscope] 포트 $PORT 점유 프로세스 종료 중: $PORT_PIDS"
+    echo "$PORT_PIDS" | xargs kill 2>/dev/null || true
+  fi
+done
