@@ -53,6 +53,19 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
         scan_dir_for_sessions(&codex_sessions_dir, "codex", &mut sessions, true);
     }
 
+    // 5. TokenScope dogfood fixtures (repo-local, visible in the app for demos)
+    if let Ok(cwd) = std::env::current_dir() {
+        let dogfood_candidates = [
+            cwd.join("dogfood").join("sessions"),
+            cwd.join("..").join("dogfood").join("sessions"),
+        ];
+        for dogfood_sessions_dir in dogfood_candidates {
+            if dogfood_sessions_dir.exists() {
+                scan_dir_for_sessions(&dogfood_sessions_dir, "tokenscope-dogfood", &mut sessions, true);
+            }
+        }
+    }
+
     sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
     // Remove duplicates by path
     sessions.dedup_by(|a, b| a.path == b.path);
@@ -99,7 +112,13 @@ fn get_session_file(path: &PathBuf, project_name: &str) -> Option<SessionFile> {
     let session_id = path.file_stem()
         .and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
 
-    let project = if project_name == "codex" {
+    let project = if session_id.contains("dogfood-bad") {
+        "dogfood-bad".to_string()
+    } else if session_id.contains("dogfood-good") {
+        "dogfood-good".to_string()
+    } else if session_id.contains("dogfood") {
+        "tokenscope-dogfood".to_string()
+    } else if project_name == "codex" {
         infer_codex_project(path).unwrap_or_else(|| project_name.to_string())
     } else {
         project_name.to_string()

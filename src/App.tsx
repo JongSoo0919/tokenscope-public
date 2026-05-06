@@ -5,6 +5,7 @@ import { SummaryCard } from "./components/SummaryCard";
 import { FixPreview } from "./components/FixPreview";
 import { QuestionGuide } from "./components/QuestionGuide";
 import { Dashboard } from "./components/Dashboard";
+import { ConversationReview } from "./components/ConversationReview";
 import { parseSession, isHumanVisibleMessage } from "./lib/parser";
 import { analyzeSession, DiagnosticResult } from "./lib/analyzer";
 import { prescribe, Fix, UsageWindowContext } from "./lib/prescriber";
@@ -54,7 +55,7 @@ export default function App() {
             try {
               const res = await invoke<ReadResult>("read_session", { path: s.path });
               const parsed = parseSession(res.content, s.session_id, s.project, s.path);
-              const configMd = getConfigMd(parsed.provider, cMd, gMd, xMd);
+              const configMd = getSessionConfigMd(parsed, cMd, gMd, xMd);
               const diag = analyzeSession(parsed, configMd);
               results.set(s.path, diag);
             } catch (e) {
@@ -83,7 +84,7 @@ export default function App() {
       const result = await invoke<ReadResult>("read_session", { path: session.path });
       // use parseSession for both .json and .jsonl
       const parsed = parseSession(result.content, session.session_id, session.project, session.path);
-      const currentConfigMd = getConfigMd(parsed.provider, claudeMd, geminiMd, codexMd);
+      const currentConfigMd = getSessionConfigMd(parsed, claudeMd, geminiMd, codexMd);
       
       const diag = analyzeSession(parsed, currentConfigMd);
       const usageWindow = buildUsageWindowContext(diag, diagnostics);
@@ -227,7 +228,7 @@ export default function App() {
             )}
 
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              {["summary", "detail", "guide"].map(tab => (
+              {["summary", "conversation", "detail", "guide"].map(tab => (
                 <button
                   key={tab}
                   className={`btn ${activeTab === tab ? "active" : ""}`}
@@ -238,7 +239,7 @@ export default function App() {
                     color: activeTab === tab ? "var(--primary-fg)" : "var(--text)",
                   }}
                 >
-                  {tab === "summary" ? "처방" : tab === "detail" ? "상세" : "질문 가이드"}
+                  {getTabLabel(tab)}
                 </button>
               ))}
             </div>
@@ -279,6 +280,10 @@ export default function App() {
               </div>
             )}
 
+            {activeTab === "conversation" && (
+              <ConversationReview diagnostic={diagnostic} />
+            )}
+
             {activeTab === "guide" && (
               <QuestionGuide patterns={diagnostic.patterns} scoreBreakdown={diagnostic.scoreBreakdown} />
             )}
@@ -306,10 +311,21 @@ function getConfigMd(provider: string, claudeMd: string, geminiMd: string, codex
   return claudeMd;
 }
 
+function getSessionConfigMd(parsed: ReturnType<typeof parseSession>, claudeMd: string, geminiMd: string, codexMd: string): string {
+  return parsed.fixtureConfigMd ?? getConfigMd(parsed.provider, claudeMd, geminiMd, codexMd);
+}
+
 function getConfigLabel(provider: string): string {
   if (provider === "gemini") return "GEMINI.md";
   if (provider === "codex") return "AGENTS.md";
   return "CLAUDE.md";
+}
+
+function getTabLabel(tab: string): string {
+  if (tab === "summary") return "처방";
+  if (tab === "conversation") return "대화 기록";
+  if (tab === "detail") return "상세";
+  return "질문 가이드";
 }
 
 function buildUsageWindowContext(current: DiagnosticResult, diagnostics: Map<string, DiagnosticResult>): UsageWindowContext {
