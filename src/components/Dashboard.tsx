@@ -2,12 +2,12 @@ import { useState } from "react";
 import { DiagnosticResult } from "../lib/analyzer";
 
 const TIPS = [
-  "CLAUDE.md/AGENTS.md는 없애는 대상이 아니라 상시 로딩할 가치가 있는 규칙만 남기는 대상입니다.",
+  "전역 CLAUDE.md/AGENTS.md는 없애는 대상이 아니라 모든 프로젝트에 항상 필요한 규칙만 남기는 대상입니다.",
   "캐시 적중률을 높이려면 대화 초반에 필요한 파일을 모두 Read하고, 이후엔 불필요한 컨텍스트 변경을 줄이세요.",
-  "같은 도구로 3회 이상 실패하면 접근법을 바꾸도록 CLAUDE.md에 명시하면 도구 실패율을 크게 줄일 수 있습니다.",
+  "같은 도구로 3회 이상 실패하는 문제는 전역 설정보다 해당 프로젝트 AGENTS.md의 실행 규칙으로 남기는 편이 낫습니다.",
   "세션이 길어질수록 입력 토큰이 누적됩니다. 새 작업은 새 세션에서 시작하는 것이 비용 면에서 효율적입니다.",
   "긴 설정 파일은 필수 지침, 자주 쓰는 지침, 상황별 지침으로 나누면 체감 사용량을 줄일 수 있습니다.",
-  "반복적인 재시도는 지침이 불명확하다는 신호입니다. 설정 파일에 더 구체적인 단계별 지침을 추가하세요.",
+  "반복적인 재시도는 작업 규칙이 불명확하다는 신호입니다. 해당 프로젝트 AGENTS.md에 중단 기준을 짧게 추가하세요.",
   "cache_creation 비용은 cache_read보다 높습니다. 캐시된 컨텍스트를 여러 번 재활용하는 구조로 작업하세요.",
   "도구 오류가 많다면 입력값 검증 지침을 설정 파일에 추가하는 것이 효과적입니다.",
   "출력 토큰보다 입력 토큰이 훨씬 많다면 컨텍스트가 너무 비대한 신호입니다. 관련 없는 정보를 줄이세요.",
@@ -484,16 +484,16 @@ function buildTopWaste(results: DiagnosticResult[]): WasteCandidate[] {
 
 function buildPrimaryAction(topWaste: WasteCandidate | undefined, toolScore: number, retryScore: number, actionScore: number, configScore: number): string {
   if (topWaste?.title.includes("요청")) {
-    return "질문 가이드에서 넓은 요청을 4요소 템플릿으로 바꾸고, 설정 파일에 사용자 요청 압축 도우미를 적용하세요.";
+    return "질문 가이드에서 넓은 요청을 4요소 템플릿으로 바꾸고, 해당 프로젝트 AGENTS.md에 요청 압축 규칙을 짧게 남기세요.";
   }
   if (topWaste?.title.includes("도구") || toolScore < 70) {
-    return "처방 탭에서 실패 중단 기준을 설정 파일에 추가하세요. 같은 도구 2회 실패 후에는 대안을 보고하게 만듭니다.";
+    return "처방 탭에서 실패 중단 기준을 확인하세요. 전역 설정이 아니라 실패가 발생한 프로젝트 AGENTS.md에 같은 도구 2회 실패 후 대안을 보고하도록 남기세요.";
   }
   if (topWaste?.title.includes("세션") || actionScore < 70) {
-    return "처방 탭에서 세션 분리 기준을 적용하세요. 기획, 구현, 검증 전환 시 새 세션을 권장하게 합니다.";
+    return "처방 탭에서 세션 분리 기준을 확인하세요. 기획, 구현, 검증 전환 규칙은 해당 프로젝트 AGENTS.md에 두는 편이 좋습니다.";
   }
   if (topWaste?.title.includes("로딩") || configScore < 60) {
-    return "상시 지침 다이어트 처방을 확인하세요. 필수 지침만 남기고 긴 절차는 온디맨드 문서로 분리합니다.";
+    return "전역 설정은 대시보드에서 여러 세션 근거를 종합해 정리하세요. 필수 지침만 남기고 프로젝트별 긴 절차는 해당 AGENTS.md나 온디맨드 문서로 분리합니다.";
   }
   if (retryScore < 80) {
     return "반복 요청이 감지됩니다. 다음 요청에는 실패 조건, 중단 기준, 검증 기준을 먼저 넣으세요.";

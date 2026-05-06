@@ -30,6 +30,9 @@ export function FixPreview({ fix, onApply, applying }: Props) {
           {fix.description}
         </div>
         <MetaRow fix={fix} />
+        {fix.beforeAfterComparison && (
+          <CompactImpact comparison={fix.beforeAfterComparison} />
+        )}
         <div style={{ fontSize: 12, color: "var(--muted)" }}>
           {fix.action.steps.map((step, i) => (
             <div key={i} style={{ marginBottom: 4 }}>
@@ -169,13 +172,28 @@ function MetaRow({ fix, confidence }: { fix: Fix; confidence?: "HIGH" | "MEDIUM"
   const risk = confidence === "LOW" ? "수동 검토" : confidence === "HIGH" ? "낮음" : "중간";
   const target = fix.action.kind === "edit_config_md"
     ? fix.action.provider === "gemini" ? "GEMINI.md" : fix.action.provider === "codex" ? "AGENTS.md" : "CLAUDE.md"
-    : "질문 방식";
+    : "프로젝트 AGENTS.md";
 
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
       <Badge label="목적" value={purposeLabel(fix.patternType)} />
       <Badge label="대상" value={target} />
       <Badge label="위험도" value={risk} />
+    </div>
+  );
+}
+
+function CompactImpact({ comparison }: { comparison: NonNullable<Fix["beforeAfterComparison"]> }) {
+  return (
+    <div style={{ background: "var(--surface2)", borderRadius: 6, padding: "10px 12px", marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>예상 낭비 감소</span>
+        <strong style={{ fontSize: 14, color: "var(--green)" }}>{fmt(comparison.savedTokens)} 토큰</strong>
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>현재 세션 {fmtPercent(comparison.sessionSavedPercentage)} 기준</span>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+        근거: {comparison.basis} · 자동 수정 대신 프로젝트 규칙으로 반영
+      </div>
     </div>
   );
 }

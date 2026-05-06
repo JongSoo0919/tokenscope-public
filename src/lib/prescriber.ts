@@ -1,5 +1,14 @@
-import { WastePattern, DiagnosticResult, isContextBloatEvidence, isRetryStormEvidence, isToolThrashEvidence, isBroadRequestEvidence } from "./analyzer";
-import { ClaudeSection, estimateTokens, isHumanVisibleMessage } from "./parser";
+import {
+  WastePattern,
+  DiagnosticResult,
+  isContextBloatEvidence,
+  isRetryStormEvidence,
+  isToolThrashEvidence,
+  isBroadRequestEvidence,
+  isSessionScopeEvidence,
+  isPhaseMixingEvidence,
+} from "./analyzer";
+import { estimateTokens, isHumanVisibleMessage } from "./parser";
 import { PROVIDER_CONFIGS, calculateCost, formatCost } from "./providers";
 
 export interface Fix {
@@ -41,10 +50,21 @@ export interface DiffLine {
 }
 
 export function prescribe(result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix[] {
-  return result.patterns.map(p => prescribePattern(p, configMdContent, result, usageWindow)).filter((f): f is Fix => f !== null);
+  const fixes: Fix[] = [];
+  const contextPattern = result.patterns.find(p => p.type === "CONTEXT_BLOAT");
+  if (contextPattern) {
+    const contextFix = prescribeContextBloat(contextPattern, configMdContent, result, usageWindow);
+    fixes.push(contextFix);
+  }
+
+  const projectPatterns = result.patterns.filter(p => p.type !== "CONTEXT_BLOAT");
+  const projectFix = prescribeProjectAgentsGuidance(projectPatterns, result, usageWindow);
+  if (projectFix) fixes.push(projectFix);
+
+  return fixes;
 }
 
-function prescribePattern(pattern: WastePattern, configMdContent: string, result: DiagnosticResult, usageWindow?: UsageWindowContext): Fix | null {
+export function prescribePattern(pattern: WastePattern, configMdContent: string, result: DiagnosticResult, usageWindow?: UsageWindowContext): Fix | null {
   switch (pattern.type) {
     case "CONTEXT_BLOAT":
       return prescribeContextBloat(pattern, configMdContent, result, usageWindow);
@@ -72,31 +92,27 @@ function prescribeContextBloat(pattern: WastePattern, configMdContent: string, r
   }
 
   const { topOffenders } = evidence;
-  const trimmed = trimConfigMd(configMdContent, topOffenders);
-  const diff = buildDiff(configMdContent, trimmed);
-
   const beforeTokens = estimateTokens(configMdContent);
-  const afterTokens = estimateTokens(trimmed);
+  const targetTokens = Math.max(500, beforeTokens - pattern.estimatedWastedTokens);
   const msgCount = Math.max(1, result.session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length);
   const beforeTotal = beforeTokens * msgCount;
-  const afterTotal = afterTokens * msgCount;
+  const afterTotal = targetTokens * msgCount;
   const savedTokens = beforeTotal - afterTotal;
   const savedPercentage = beforeTotal > 0 ? Math.round((savedTokens / beforeTotal) * 100) : 0;
 
   const savedCost = calculateCost(provider, savedTokens, 0, 0);
   const savedCostFormatted = formatCost(savedCost, PROVIDER_CONFIGS[provider].tokenPricing.currency);
+  const steps = [
+    `대상: 전역 ${configFileName}. 이 파일은 한 세션만 보고 자동 수정하지 말고 대시보드에서 여러 세션 근거를 종합해 정리하세요.`,
+    ...topOffenders.map(section => `정리 후보: ${section.heading} · 약 ${section.estimatedTokens.toLocaleString("ko-KR")}토큰. 항상 필요한 규칙 1-3개만 남기고 상세 절차는 별도 문서나 Skill로 분리하세요.`),
+    "프로젝트별 규칙, 도메인 지식, 특정 도구 운용법은 전역 설정이 아니라 해당 프로젝트 AGENTS.md에 두세요.",
+  ];
 
   return {
     patternType: "CONTEXT_BLOAT",
-    title: `${configFileName} 상시 지침 정리`,
-    description: `가장 무거운 ${topOffenders.length}개 섹션에서 항상 필요한 규칙만 남기고 상황별 지침은 분리합니다.`,
-    action: {
-      kind: "edit_config_md",
-      provider,
-      originalContent: configMdContent,
-      suggestedContent: trimmed,
-      diff,
-    },
+    title: `전역 ${configFileName} 섹션 종합 정리`,
+    description: `무거운 섹션을 자동 diff로 갈아엎지 않습니다. 대시보드에서 반복적으로 낭비를 만든 섹션만 골라 전역 규칙으로 남길 가치가 있는지 판단하세요.`,
+    action: { kind: "info", steps },
     beforeAfterComparison: buildImpactComparison(
       result,
       savedTokens,
@@ -194,40 +210,6 @@ function getPatternImpactBasis(type: WastePattern["type"]): string {
     default:
       return "패턴 기반 추정";
   }
-}
-
-function trimConfigMd(content: string, topOffenders: ClaudeSection[]): string {
-  const lines = content.split("\n");
-  const result: string[] = [];
-  let inOffender = false;
-  let offenderTokens = 0;
-  const offenderHeadings = new Set(topOffenders.map(s => `## ${s.heading}`));
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (line.startsWith("## ")) {
-      inOffender = offenderHeadings.has(line);
-      offenderTokens = 0;
-    }
-
-    if (inOffender) {
-      offenderTokens += Math.ceil(line.length / 3);
-      const headingLineIdx = lines.findIndex(l => offenderHeadings.has(l));
-      const relIdx = i - headingLineIdx;
-      if (relIdx === 0) {
-        result.push(line);
-      } else if (offenderTokens < 100) {
-        result.push(line);
-      } else if (!result.some(r => r.includes("# [압축됨]") || r.includes("[TRIMMED]"))) {
-        result.push("# [온디맨드 분리 후보] 항상 필요한 핵심만 남기고 상세 지침은 별도 Skill/문서로 옮기세요.");
-      }
-    } else {
-      result.push(line);
-    }
-  }
-
-  return result.join("\n");
 }
 
 function prescribeRetryStorm(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
@@ -349,6 +331,60 @@ function buildRulesFix(
     },
     beforeAfterComparison,
   };
+}
+
+function prescribeProjectAgentsGuidance(
+  patterns: WastePattern[],
+  result: DiagnosticResult,
+  usageWindow?: UsageWindowContext
+): Fix | null {
+  if (patterns.length === 0) return null;
+
+  const steps = buildProjectAgentsSteps(patterns);
+  const totalWaste = patterns.reduce((sum, pattern) => sum + Math.max(0, pattern.estimatedWastedTokens), 0);
+
+  return {
+    patternType: patterns[0].type,
+    title: "프로젝트 AGENTS.md 작업 규칙 보강",
+    description: "반복 실패, 넓은 요청, 세션 혼합 처방을 한 곳으로 묶었습니다. 전역 설정은 대시보드에서 종합 정리하고, 이 세션의 작업 규칙은 해당 프로젝트 AGENTS.md에 반영하세요.",
+    action: { kind: "info", steps },
+    beforeAfterComparison: buildImpactComparison(
+      result,
+      totalWaste,
+      getSessionTotalTokens(result),
+      Math.max(0, getSessionTotalTokens(result) - totalWaste),
+      getSessionTotalTokens(result) > 0 ? Math.round((totalWaste / getSessionTotalTokens(result)) * 100) : 0,
+      calculateCost(result.session.provider, totalWaste, 0, 0),
+      formatCost(calculateCost(result.session.provider, totalWaste, 0, 0), PROVIDER_CONFIGS[result.session.provider].tokenPricing.currency),
+      "감지된 비전역 패턴의 낭비 토큰 합산",
+      "LOW",
+      usageWindow
+    ),
+  };
+}
+
+function buildProjectAgentsSteps(patterns: WastePattern[]): string[] {
+  const lines = [
+    "대상: 현재 작업이 발생한 프로젝트의 AGENTS.md",
+    "전역 CLAUDE.md/AGENTS.md에는 모든 프로젝트에 항상 필요한 원칙만 남기고, 아래 규칙은 프로젝트별로 둡니다.",
+  ];
+
+  for (const pattern of patterns) {
+    if (isRetryStormEvidence(pattern.evidence)) {
+      lines.push(`반복 요청: 같은 요청이 반복되면 이전 시도, 실패 원인, 다음 대안을 먼저 3줄로 정리합니다. 감지된 중복 요청 ${pattern.evidence.totalExtraMessages}개.`);
+    } else if (isToolThrashEvidence(pattern.evidence)) {
+      lines.push(`도구 실패: ${pattern.evidence.toolName}가 2회 실패하면 같은 방식으로 재호출하지 말고 경로, 권한, 입력값을 재검증합니다.`);
+    } else if (isSessionScopeEvidence(pattern.evidence)) {
+      lines.push(`세션 범위: ${pattern.evidence.detectedWorkTypes.join(", ")} 흐름이 섞이면 현재 결과를 요약하고 새 세션을 권장합니다.`);
+    } else if (isPhaseMixingEvidence(pattern.evidence)) {
+      lines.push(`단계 전환: ${pattern.evidence.phases.join(", ")} 단계가 바뀔 때는 결정 사항, 파일 범위, 완료 조건만 남기고 새 세션으로 넘깁니다.`);
+    } else if (isBroadRequestEvidence(pattern.evidence)) {
+      const example = pattern.evidence.requests[0];
+      lines.push(`넓은 요청: 바로 실행하지 말고 목표, 범위, 하지 않을 일, 완료 조건으로 재정리합니다. 예: ${example?.improved ?? "범위를 좁힌 요청으로 바꿉니다."}`);
+    }
+  }
+
+  return Array.from(new Set(lines));
 }
 
 function upsertTokenScopeRules(content: string, rules: string[]): string {
