@@ -19,6 +19,8 @@ export interface RawEntry {
   toolCalls?: any[]; // Gemini style tool calls
   messages?: RawEntry[]; // Nested messages in .json format
   payload?: any; // Codex style event payload
+  fixtureConfigMd?: string;
+  fixtureName?: string;
 }
 
 export interface RawMessage {
@@ -102,6 +104,8 @@ export interface SessionData {
   startTime: string;
   endTime: string;
   parseErrors: number;
+  fixtureConfigMd?: string;
+  fixtureName?: string;
 }
 
 export function parseSession(raw: string, sessionId: string, project: string, filePath: string): SessionData {
@@ -173,6 +177,8 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
   let provider: Provider = filePath.includes("/.codex/") || project === "codex" ? "codex" : "claude";
   let startTime = "";
   let endTime = "";
+  let fixtureConfigMd: string | undefined;
+  let fixtureName: string | undefined;
 
   for (const line of lines) {
     if (line.startsWith('{"$set"')) continue;
@@ -189,6 +195,15 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
       provider = entry.payload.model_provider === "openai" ? "codex" : provider;
       model = entry.payload.model ?? (provider === "codex" ? "codex" : model);
       if (entry.payload.timestamp) startTime = entry.payload.timestamp;
+      continue;
+    }
+
+    if (entry.type === "tokenscope_fixture") {
+      fixtureConfigMd = entry.fixtureConfigMd;
+      fixtureName = entry.fixtureName;
+      provider = "codex";
+      model = "tokenscope-dogfood";
+      if (entry.timestamp) startTime = entry.timestamp;
       continue;
     }
 
@@ -240,7 +255,7 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
   return {
     sessionId, project, filePath, messages,
     totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens,
-    model, provider, startTime, endTime, parseErrors,
+    model, provider, startTime, endTime, parseErrors, fixtureConfigMd, fixtureName,
   };
 }
 
