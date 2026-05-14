@@ -77,6 +77,16 @@ interface WasteCandidate {
   severity: string;
 }
 
+interface SubscriptionBudget {
+  name: string;
+  family: "openai" | "claude";
+  estimatedBudget: number;
+  usedTokens: number;
+  optimizedTokens: number;
+  basis: string;
+  note: string;
+}
+
 export function Dashboard({ diagnostics }: Props) {
   const [tipIdx] = useState(() => Math.floor(Math.random() * TIPS.length));
 
@@ -115,6 +125,8 @@ export function Dashboard({ diagnostics }: Props) {
   const verdictReasons = buildVerdictReasons(fiveHourResults, recentTool, recentRetry, recentAction, recentConfig);
   const topWaste = buildTopWaste(fiveHourResults);
   const recentTokens = fiveHourResults.reduce((sum, result) => sum + getTotalTokens(result), 0);
+  const recentWasted = fiveHourResults.reduce((sum, result) => sum + result.totalWastedTokens, 0);
+  const subscriptionBudgets = buildSubscriptionBudgets(recentTokens, recentWasted);
   const primaryAction = buildPrimaryAction(topWaste[0], recentTool, recentRetry, recentAction, recentConfig);
   const blockAction = buildBlockAction(recentTokens, recentAvg, recentAction);
 
@@ -287,6 +299,29 @@ export function Dashboard({ diagnostics }: Props) {
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-title">구독제별 추정 토큰 예산</div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55, maxWidth: 680 }}>
+            공식 플랜은 고정 토큰량을 공개하지 않고 사용량 배수와 시간창 제한으로 운영됩니다. 아래 값은 최근 5시간 사용량 {recentTokens.toLocaleString("ko-KR")}토큰을 기준으로 환산한 작업 예산 추정치입니다.
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "right" }}>
+            절약 후보 반영 시<br />
+            <strong style={{ color: "var(--green)", fontSize: 13 }}>
+              약 {Math.max(0, recentTokens - recentWasted).toLocaleString("ko-KR")} 토큰
+            </strong>
+          </div>
+        </div>
+        <div className="plan-budget-grid">
+          {subscriptionBudgets.map(plan => (
+            <PlanBudgetCard key={plan.name} plan={plan} />
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5, marginTop: 10 }}>
+          출처 기준: OpenAI는 Pro를 Plus 대비 5x/20x 사용량으로 설명하고, Anthropic은 Claude Max를 Pro 대비 5x/20x 사용량으로 설명합니다. 실제 한도는 모델, 피크 시간, 기능, 대화 길이에 따라 달라집니다.
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-title">세션별 건강 점수 (최근 {chartData.length}개)</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
           {chartData.map((r, i) => {
@@ -415,6 +450,119 @@ function ActionBox({ title, body, accent }: { title: string; body: string; accen
       <div style={{ fontSize: 12, color: "var(--text)", lineHeight: 1.55 }}>{body}</div>
     </div>
   );
+}
+
+function PlanBudgetCard({ plan }: { plan: SubscriptionBudget }) {
+  const usedPct = plan.estimatedBudget > 0 ? Math.min(100, Math.round((plan.usedTokens / plan.estimatedBudget) * 100)) : 0;
+  const optimizedPct = plan.estimatedBudget > 0 ? Math.min(100, Math.round((plan.optimizedTokens / plan.estimatedBudget) * 100)) : 0;
+  const remaining = Math.max(0, plan.estimatedBudget - plan.usedTokens);
+  const color = usedPct >= 90 ? "var(--red)" : usedPct >= 70 ? "var(--orange)" : "var(--green)";
+
+  return (
+    <div className="plan-budget-card">
+      <div className="plan-budget-top">
+        <div>
+          <div className="plan-budget-name">{plan.name}</div>
+          <div className="plan-budget-basis">{plan.basis}</div>
+        </div>
+        <div className={`plan-budget-family ${plan.family}`}>{plan.family === "openai" ? "OpenAI" : "Claude"}</div>
+      </div>
+      <div className="plan-budget-main">
+        <div>
+          <span>추정 5시간 예산</span>
+          <strong>{plan.estimatedBudget.toLocaleString("ko-KR")}</strong>
+        </div>
+        <div>
+          <span>현재 사용</span>
+          <strong style={{ color }}>{usedPct}%</strong>
+        </div>
+        <div>
+          <span>남은 추정</span>
+          <strong>{remaining.toLocaleString("ko-KR")}</strong>
+        </div>
+      </div>
+      <div className="plan-budget-bars">
+        <div className="plan-budget-bar">
+          <div style={{ width: `${usedPct}%`, background: color }} />
+        </div>
+        <div className="plan-budget-bar optimized">
+          <div style={{ width: `${optimizedPct}%` }} />
+        </div>
+      </div>
+      <div className="plan-budget-note">
+        최적화 후 예상 사용률 {optimizedPct}% · {plan.note}
+      </div>
+    </div>
+  );
+}
+
+function buildSubscriptionBudgets(recentTokens: number, wastedTokens: number): SubscriptionBudget[] {
+  const usedTokens = Math.max(0, recentTokens);
+  const optimizedTokens = Math.max(0, recentTokens - wastedTokens);
+  const openAiPlusBase = estimateBaseBudget(usedTokens, 120000);
+  const claudeProBase = estimateBaseBudget(usedTokens, 90000);
+
+  return [
+    {
+      name: "ChatGPT Plus",
+      family: "openai",
+      estimatedBudget: openAiPlusBase,
+      usedTokens,
+      optimizedTokens,
+      basis: "Plus 1x 기준",
+      note: "Plus는 고정 토큰량이 아니라 사용량 제한 기반",
+    },
+    {
+      name: "ChatGPT Pro 5x",
+      family: "openai",
+      estimatedBudget: openAiPlusBase * 5,
+      usedTokens,
+      optimizedTokens,
+      basis: "Plus 대비 5x",
+      note: "Codex는 프로모션 기간에 더 높은 배수가 적용될 수 있음",
+    },
+    {
+      name: "ChatGPT Pro 20x",
+      family: "openai",
+      estimatedBudget: openAiPlusBase * 20,
+      usedTokens,
+      optimizedTokens,
+      basis: "Plus 대비 20x",
+      note: "장시간/병렬 작업용 추정 상한",
+    },
+    {
+      name: "Claude Pro",
+      family: "claude",
+      estimatedBudget: claudeProBase,
+      usedTokens,
+      optimizedTokens,
+      basis: "Pro 1x 기준",
+      note: "Claude는 메시지 길이와 피크 시간에 따라 실제 사용량 변동",
+    },
+    {
+      name: "Claude Max 5x",
+      family: "claude",
+      estimatedBudget: claudeProBase * 5,
+      usedTokens,
+      optimizedTokens,
+      basis: "Pro 대비 5x",
+      note: "Claude Code도 같은 구독 사용량에 포함",
+    },
+    {
+      name: "Claude Max 20x",
+      family: "claude",
+      estimatedBudget: claudeProBase * 20,
+      usedTokens,
+      optimizedTokens,
+      basis: "Pro 대비 20x",
+      note: "가장 긴 작업 블록용 추정 상한",
+    },
+  ];
+}
+
+function estimateBaseBudget(recentTokens: number, floorTokens: number): number {
+  const buffer = Math.ceil((recentTokens * 1.25) / 10000) * 10000;
+  return Math.max(floorTokens, buffer);
 }
 
 function getSessionTime(result: DiagnosticResult): number {
