@@ -460,6 +460,7 @@ function PlanBudgetCard({ plan }: { plan: SubscriptionBudget }) {
   const usedPct = hasData && plan.estimatedBudget > 0 ? Math.min(100, Math.round((usedTokens / plan.estimatedBudget) * 100)) : 0;
   const optimizedPct = hasData && plan.estimatedBudget > 0 ? Math.min(100, Math.round((optimizedTokens / plan.estimatedBudget) * 100)) : 0;
   const remaining = hasData ? Math.max(0, plan.estimatedBudget - usedTokens) : null;
+  const optimizedRemaining = hasData ? Math.max(0, plan.estimatedBudget - optimizedTokens) : null;
   const color = usedPct >= 90 ? "var(--red)" : usedPct >= 70 ? "var(--orange)" : "var(--green)";
 
   return (
@@ -471,18 +472,35 @@ function PlanBudgetCard({ plan }: { plan: SubscriptionBudget }) {
         </div>
         <div className={`plan-budget-family ${plan.family}`}>{plan.family === "openai" ? "OpenAI" : "Claude"}</div>
       </div>
+      <div className="plan-budget-total">
+        <span>추정 5시간 총량</span>
+        <strong>{plan.estimatedBudget.toLocaleString("ko-KR")}</strong>
+        <em>{hasData ? `${usedTokens.toLocaleString("ko-KR")} 사용 + ${remaining?.toLocaleString("ko-KR")} 남음` : "해당 공급자 사용 데이터 없음"}</em>
+      </div>
       <div className="plan-budget-main">
         <div>
-          <span>추정 5시간 예산</span>
-          <strong>{plan.estimatedBudget.toLocaleString("ko-KR")}</strong>
+          <span>5시간 사용</span>
+          <strong>{hasData ? usedTokens.toLocaleString("ko-KR") : "-"}</strong>
         </div>
         <div>
-          <span>현재 사용</span>
+          <span>사용률</span>
           <strong style={{ color: hasData ? color : "var(--muted)" }}>{hasData ? `${usedPct}%` : "데이터 없음"}</strong>
         </div>
         <div>
           <span>남은 추정</span>
           <strong>{remaining === null ? "-" : remaining.toLocaleString("ko-KR")}</strong>
+        </div>
+        <div>
+          <span>최적화 후 사용</span>
+          <strong>{hasData ? optimizedTokens.toLocaleString("ko-KR") : "-"}</strong>
+        </div>
+        <div>
+          <span>최적화 후 사용률</span>
+          <strong>{hasData ? `${optimizedPct}%` : "-"}</strong>
+        </div>
+        <div>
+          <span>최적화 후 남음</span>
+          <strong>{optimizedRemaining === null ? "-" : optimizedRemaining.toLocaleString("ko-KR")}</strong>
         </div>
       </div>
       <div className="plan-budget-bars">
