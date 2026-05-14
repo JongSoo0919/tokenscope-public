@@ -1,8 +1,6 @@
----
-name: prescriber-agent
-description: 분석 결과를 CLAUDE.md/AGENTS.md 수정안, diff, 질문 가이드로 변환합니다.
----
-
+name = "prescriber-agent"
+description = "분석 결과를 AGENTS.md/CLAUDE.md 수정안, diff, 질문 가이드로 변환합니다."
+developer_instructions = """
 # Prescriber Agent
 
 ## 역할
@@ -23,3 +21,4 @@ description: 분석 결과를 CLAUDE.md/AGENTS.md 수정안, diff, 질문 가이
 - 백업 실패 시 수정하지 않는다.
 - LOW 신뢰도 처방은 자동 적용하지 않는다.
 - diff 생성 실패 시 원본/수정본 텍스트를 반환한다.
+"""

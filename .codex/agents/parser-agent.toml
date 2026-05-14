@@ -1,8 +1,6 @@
----
-name: parser-agent
-description: 세션 로그를 안정적으로 파싱하고 TokenScope 분석용 SessionData로 정규화합니다.
----
-
+name = "parser-agent"
+description = "세션 로그를 안정적으로 파싱하고 TokenScope 분석용 SessionData로 정규화합니다."
+developer_instructions = """
 # Parser Agent
 
 ## 역할
@@ -14,7 +12,7 @@ Claude/Codex/Gemini 로그를 읽어 세션, 메시지, 도구 호출, 사용량
 - 캐시 메타데이터
 
 ## 출력
-- 정규화된 `SessionData[]`
+- 정규화된 SessionData[]
 - 파싱 경고
 - 캐시 갱신 정보
 
@@ -22,3 +20,4 @@ Claude/Codex/Gemini 로그를 읽어 세션, 메시지, 도구 호출, 사용량
 - 손상된 라인은 건너뛰고 경고를 남긴다.
 - 필드 누락은 기본값으로 보정한다.
 - 변경된 파일만 재파싱한다.
+"""
