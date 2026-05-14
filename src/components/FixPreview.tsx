@@ -1,4 +1,4 @@
-import { Fix } from "../lib/prescriber";
+import { Fix, SectionImpact } from "../lib/prescriber";
 import { DiffViewer } from "./DiffViewer";
 
 interface Props {
@@ -31,7 +31,10 @@ export function FixPreview({ fix, onApply, applying }: Props) {
         </div>
         <MetaRow fix={fix} />
         {fix.beforeAfterComparison && (
-          <CompactImpact comparison={fix.beforeAfterComparison} />
+          <>
+            <CompactImpact comparison={fix.beforeAfterComparison} />
+            <SectionImpactTable sections={fix.beforeAfterComparison.sectionImpacts} />
+          </>
         )}
         <div style={{ fontSize: 12, color: "var(--muted)" }}>
           {fix.action.steps.map((step, i) => (
@@ -146,6 +149,8 @@ export function FixPreview({ fix, onApply, applying }: Props) {
         </div>
       </div>
 
+      <SectionImpactTable sections={beforeAfterComparison.sectionImpacts} />
+
       {requiresManualReview && (
         <div style={{ background: "rgba(255,170,77,0.12)", border: "1px solid var(--orange)", borderRadius: 6, padding: "10px 12px", marginBottom: 12, fontSize: 12, color: "var(--text)", lineHeight: 1.55 }}>
           {manualReason}
@@ -193,6 +198,55 @@ function CompactImpact({ comparison }: { comparison: NonNullable<Fix["beforeAfte
       </div>
       <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
         근거: {comparison.basis} · 자동 수정 대신 프로젝트 규칙으로 반영
+      </div>
+    </div>
+  );
+}
+
+function SectionImpactTable({ sections }: { sections?: SectionImpact[] }) {
+  if (!sections || sections.length === 0) return null;
+
+  const totalBefore = sections.reduce((sum, section) => sum + section.beforeTokens, 0);
+  const totalAfter = sections.reduce((sum, section) => sum + section.afterTokens, 0);
+  const totalSaved = Math.max(0, totalBefore - totalAfter);
+  const totalSavedPercentage = totalBefore > 0 ? Math.round((totalSaved / totalBefore) * 100) : 0;
+
+  return (
+    <div className="section-impact" style={{ marginBottom: 12 }}>
+      <div className="section-impact-header">
+        <div>
+          <div className="section-impact-title">섹션별 개선 추정</div>
+          <div className="section-impact-subtitle">
+            현재 상태에서 정리 후 예상 상태를 섹션 단위로 비교합니다.
+          </div>
+        </div>
+        <div className="section-impact-total">
+          {fmt(totalBefore)} → {fmt(totalAfter)}
+          <span>{fmt(totalSaved)} 토큰 절감 ({totalSavedPercentage}%)</span>
+        </div>
+      </div>
+      <div className="section-impact-table">
+        <div className="section-impact-row head">
+          <div>섹션</div>
+          <div>현재</div>
+          <div>정리 후</div>
+          <div>절감</div>
+          <div>권장 조치</div>
+        </div>
+        {sections.map((section) => (
+          <div className="section-impact-row" key={section.heading}>
+            <div className="section-name">
+              <span className={`priority-dot ${section.priority}`} />
+              <span title={section.heading}>{section.heading}</span>
+            </div>
+            <div>{fmt(section.beforeTokens)}</div>
+            <div className={section.savedTokens > 0 ? "after-improved" : ""}>{fmt(section.afterTokens)}</div>
+            <div className={section.savedTokens > 0 ? "saved" : ""}>
+              {section.savedTokens > 0 ? `${fmt(section.savedTokens)} (${section.savedPercentage}%)` : "-"}
+            </div>
+            <div className="recommendation">{section.recommendation}</div>
+          </div>
+        ))}
       </div>
     </div>
   );
