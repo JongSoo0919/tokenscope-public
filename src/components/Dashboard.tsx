@@ -81,8 +81,9 @@ interface SubscriptionBudget {
   name: string;
   family: "openai" | "claude";
   estimatedBudget: number;
-  usedTokens: number;
-  optimizedTokens: number;
+  usedTokens: number | null;
+  optimizedTokens: number | null;
+  sessionCount: number;
   basis: string;
   note: string;
 }
@@ -126,7 +127,7 @@ export function Dashboard({ diagnostics }: Props) {
   const topWaste = buildTopWaste(fiveHourResults);
   const recentTokens = fiveHourResults.reduce((sum, result) => sum + getTotalTokens(result), 0);
   const recentWasted = fiveHourResults.reduce((sum, result) => sum + result.totalWastedTokens, 0);
-  const subscriptionBudgets = buildSubscriptionBudgets(recentTokens, recentWasted);
+  const subscriptionBudgets = buildSubscriptionBudgets(fiveHourResults);
   const primaryAction = buildPrimaryAction(topWaste[0], recentTool, recentRetry, recentAction, recentConfig);
   const blockAction = buildBlockAction(recentTokens, recentAvg, recentAction);
 
@@ -302,7 +303,7 @@ export function Dashboard({ diagnostics }: Props) {
         <div className="card-title">구독제별 추정 토큰 예산</div>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
           <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55, maxWidth: 680 }}>
-            공식 플랜은 고정 토큰량을 공개하지 않고 사용량 배수와 시간창 제한으로 운영됩니다. 아래 값은 최근 5시간 사용량 {recentTokens.toLocaleString("ko-KR")}토큰을 기준으로 환산한 작업 예산 추정치입니다.
+            공식 플랜은 고정 토큰량을 공개하지 않고 사용량 배수와 시간창 제한으로 운영됩니다. 아래 값은 최근 5시간 사용량을 공급자별로 분리해 환산한 작업 예산 추정치입니다.
           </div>
           <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "right" }}>
             절약 후보 반영 시<br />
@@ -453,9 +454,12 @@ function ActionBox({ title, body, accent }: { title: string; body: string; accen
 }
 
 function PlanBudgetCard({ plan }: { plan: SubscriptionBudget }) {
-  const usedPct = plan.estimatedBudget > 0 ? Math.min(100, Math.round((plan.usedTokens / plan.estimatedBudget) * 100)) : 0;
-  const optimizedPct = plan.estimatedBudget > 0 ? Math.min(100, Math.round((plan.optimizedTokens / plan.estimatedBudget) * 100)) : 0;
-  const remaining = Math.max(0, plan.estimatedBudget - plan.usedTokens);
+  const hasData = plan.usedTokens !== null && plan.optimizedTokens !== null;
+  const usedTokens = plan.usedTokens ?? 0;
+  const optimizedTokens = plan.optimizedTokens ?? 0;
+  const usedPct = hasData && plan.estimatedBudget > 0 ? Math.min(100, Math.round((usedTokens / plan.estimatedBudget) * 100)) : 0;
+  const optimizedPct = hasData && plan.estimatedBudget > 0 ? Math.min(100, Math.round((optimizedTokens / plan.estimatedBudget) * 100)) : 0;
+  const remaining = hasData ? Math.max(0, plan.estimatedBudget - usedTokens) : null;
   const color = usedPct >= 90 ? "var(--red)" : usedPct >= 70 ? "var(--orange)" : "var(--green)";
 
   return (
@@ -474,11 +478,11 @@ function PlanBudgetCard({ plan }: { plan: SubscriptionBudget }) {
         </div>
         <div>
           <span>현재 사용</span>
-          <strong style={{ color }}>{usedPct}%</strong>
+          <strong style={{ color: hasData ? color : "var(--muted)" }}>{hasData ? `${usedPct}%` : "데이터 없음"}</strong>
         </div>
         <div>
           <span>남은 추정</span>
-          <strong>{remaining.toLocaleString("ko-KR")}</strong>
+          <strong>{remaining === null ? "-" : remaining.toLocaleString("ko-KR")}</strong>
         </div>
       </div>
       <div className="plan-budget-bars">
@@ -490,25 +494,26 @@ function PlanBudgetCard({ plan }: { plan: SubscriptionBudget }) {
         </div>
       </div>
       <div className="plan-budget-note">
-        최적화 후 예상 사용률 {optimizedPct}% · {plan.note}
+        {hasData ? `최적화 후 예상 사용률 ${optimizedPct}% · ${plan.sessionCount}개 세션 기준 · ${plan.note}` : `최근 5시간 ${plan.family === "openai" ? "Codex/OpenAI" : "Claude"} 세션 없음 · ${plan.note}`}
       </div>
     </div>
   );
 }
 
-function buildSubscriptionBudgets(recentTokens: number, wastedTokens: number): SubscriptionBudget[] {
-  const usedTokens = Math.max(0, recentTokens);
-  const optimizedTokens = Math.max(0, recentTokens - wastedTokens);
-  const openAiPlusBase = estimateBaseBudget(usedTokens, 120000);
-  const claudeProBase = estimateBaseBudget(usedTokens, 90000);
+function buildSubscriptionBudgets(results: DiagnosticResult[]): SubscriptionBudget[] {
+  const openAiStats = buildProviderBudgetStats(results, "codex");
+  const claudeStats = buildProviderBudgetStats(results, "claude");
+  const openAiPlusBase = estimateBaseBudget(openAiStats.usedTokens, 120000);
+  const claudeProBase = estimateBaseBudget(claudeStats.usedTokens, 90000);
 
   return [
     {
       name: "ChatGPT Plus",
       family: "openai",
       estimatedBudget: openAiPlusBase,
-      usedTokens,
-      optimizedTokens,
+      usedTokens: openAiStats.sessionCount > 0 ? openAiStats.usedTokens : null,
+      optimizedTokens: openAiStats.sessionCount > 0 ? openAiStats.optimizedTokens : null,
+      sessionCount: openAiStats.sessionCount,
       basis: "Plus 1x 기준",
       note: "Plus는 고정 토큰량이 아니라 사용량 제한 기반",
     },
@@ -516,8 +521,9 @@ function buildSubscriptionBudgets(recentTokens: number, wastedTokens: number): S
       name: "ChatGPT Pro 5x",
       family: "openai",
       estimatedBudget: openAiPlusBase * 5,
-      usedTokens,
-      optimizedTokens,
+      usedTokens: openAiStats.sessionCount > 0 ? openAiStats.usedTokens : null,
+      optimizedTokens: openAiStats.sessionCount > 0 ? openAiStats.optimizedTokens : null,
+      sessionCount: openAiStats.sessionCount,
       basis: "Plus 대비 5x",
       note: "Codex는 프로모션 기간에 더 높은 배수가 적용될 수 있음",
     },
@@ -525,8 +531,9 @@ function buildSubscriptionBudgets(recentTokens: number, wastedTokens: number): S
       name: "ChatGPT Pro 20x",
       family: "openai",
       estimatedBudget: openAiPlusBase * 20,
-      usedTokens,
-      optimizedTokens,
+      usedTokens: openAiStats.sessionCount > 0 ? openAiStats.usedTokens : null,
+      optimizedTokens: openAiStats.sessionCount > 0 ? openAiStats.optimizedTokens : null,
+      sessionCount: openAiStats.sessionCount,
       basis: "Plus 대비 20x",
       note: "장시간/병렬 작업용 추정 상한",
     },
@@ -534,8 +541,9 @@ function buildSubscriptionBudgets(recentTokens: number, wastedTokens: number): S
       name: "Claude Pro",
       family: "claude",
       estimatedBudget: claudeProBase,
-      usedTokens,
-      optimizedTokens,
+      usedTokens: claudeStats.sessionCount > 0 ? claudeStats.usedTokens : null,
+      optimizedTokens: claudeStats.sessionCount > 0 ? claudeStats.optimizedTokens : null,
+      sessionCount: claudeStats.sessionCount,
       basis: "Pro 1x 기준",
       note: "Claude는 메시지 길이와 피크 시간에 따라 실제 사용량 변동",
     },
@@ -543,8 +551,9 @@ function buildSubscriptionBudgets(recentTokens: number, wastedTokens: number): S
       name: "Claude Max 5x",
       family: "claude",
       estimatedBudget: claudeProBase * 5,
-      usedTokens,
-      optimizedTokens,
+      usedTokens: claudeStats.sessionCount > 0 ? claudeStats.usedTokens : null,
+      optimizedTokens: claudeStats.sessionCount > 0 ? claudeStats.optimizedTokens : null,
+      sessionCount: claudeStats.sessionCount,
       basis: "Pro 대비 5x",
       note: "Claude Code도 같은 구독 사용량에 포함",
     },
@@ -552,12 +561,24 @@ function buildSubscriptionBudgets(recentTokens: number, wastedTokens: number): S
       name: "Claude Max 20x",
       family: "claude",
       estimatedBudget: claudeProBase * 20,
-      usedTokens,
-      optimizedTokens,
+      usedTokens: claudeStats.sessionCount > 0 ? claudeStats.usedTokens : null,
+      optimizedTokens: claudeStats.sessionCount > 0 ? claudeStats.optimizedTokens : null,
+      sessionCount: claudeStats.sessionCount,
       basis: "Pro 대비 20x",
       note: "가장 긴 작업 블록용 추정 상한",
     },
   ];
+}
+
+function buildProviderBudgetStats(results: DiagnosticResult[], provider: "codex" | "claude") {
+  const providerResults = results.filter(result => result.session.provider === provider);
+  const usedTokens = providerResults.reduce((sum, result) => sum + getTotalTokens(result), 0);
+  const wastedTokens = providerResults.reduce((sum, result) => sum + result.totalWastedTokens, 0);
+  return {
+    sessionCount: providerResults.length,
+    usedTokens,
+    optimizedTokens: Math.max(0, usedTokens - wastedTokens),
+  };
 }
 
 function estimateBaseBudget(recentTokens: number, floorTokens: number): number {
