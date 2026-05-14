@@ -31,7 +31,18 @@ export interface Fix {
     fiveHourSavedPercentage?: number;
     averageUserTurnTokens?: number;
     equivalentUserTurns?: number;
+    sectionImpacts?: SectionImpact[];
   };
+}
+
+export interface SectionImpact {
+  heading: string;
+  beforeTokens: number;
+  afterTokens: number;
+  savedTokens: number;
+  savedPercentage: number;
+  recommendation: string;
+  priority: "HIGH" | "MEDIUM" | "LOW";
 }
 
 export interface UsageWindowContext {
@@ -93,7 +104,9 @@ function prescribeContextBloat(pattern: WastePattern, configMdContent: string, r
 
   const { topOffenders } = evidence;
   const beforeTokens = estimateTokens(configMdContent);
-  const targetTokens = Math.max(500, beforeTokens - pattern.estimatedWastedTokens);
+  const sectionImpacts = buildSectionImpacts(evidence.sections, topOffenders);
+  const estimatedSingleLoadSaved = sectionImpacts.reduce((sum, section) => sum + section.savedTokens, 0);
+  const targetTokens = Math.max(0, beforeTokens - estimatedSingleLoadSaved);
   const msgCount = Math.max(1, result.session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length);
   const beforeTotal = beforeTokens * msgCount;
   const afterTotal = targetTokens * msgCount;
@@ -108,24 +121,72 @@ function prescribeContextBloat(pattern: WastePattern, configMdContent: string, r
     "프로젝트별 규칙, 도메인 지식, 특정 도구 운용법은 전역 설정이 아니라 해당 프로젝트 AGENTS.md에 두세요.",
   ];
 
+  const comparison = buildImpactComparison(
+    result,
+    savedTokens,
+    beforeTotal,
+    afterTotal,
+    savedPercentage,
+    savedCost,
+    savedCostFormatted,
+    "섹션별 지침 파일 토큰 추정 x 현재 세션 사용자 요청 수",
+    "MEDIUM",
+    usageWindow
+  );
+
   return {
     patternType: "CONTEXT_BLOAT",
     title: `전역 ${configFileName} 섹션 종합 정리`,
     description: `무거운 섹션을 자동 diff로 갈아엎지 않습니다. 대시보드에서 반복적으로 낭비를 만든 섹션만 골라 전역 규칙으로 남길 가치가 있는지 판단하세요.`,
     action: { kind: "info", steps },
-    beforeAfterComparison: buildImpactComparison(
-      result,
-      savedTokens,
-      beforeTotal,
-      afterTotal,
-      savedPercentage,
-      savedCost,
-      savedCostFormatted,
-      "설정 파일 길이 x 현재 세션 사용자 요청 수",
-      "MEDIUM",
-      usageWindow
-    ),
+    beforeAfterComparison: { ...comparison, sectionImpacts },
   };
+}
+
+function buildSectionImpacts(sections: { heading: string; estimatedTokens: number }[], topOffenders: { heading: string }[]): SectionImpact[] {
+  const offenderHeadings = new Set(topOffenders.map(section => section.heading));
+  return sections
+    .map((section) => {
+      const beforeTokens = section.estimatedTokens;
+      const isOffender = offenderHeadings.has(section.heading);
+      const afterTokens = estimateSectionAfterTokens(beforeTokens, isOffender);
+      const savedTokens = Math.max(0, beforeTokens - afterTokens);
+      const savedPercentage = beforeTokens > 0 ? Math.round((savedTokens / beforeTokens) * 100) : 0;
+      return {
+        heading: section.heading,
+        beforeTokens,
+        afterTokens,
+        savedTokens,
+        savedPercentage,
+        priority: getSectionPriority(savedTokens),
+        recommendation: buildSectionRecommendation(section.heading, beforeTokens, afterTokens, isOffender),
+      };
+    })
+    .filter(section => section.beforeTokens > 0)
+    .sort((a, b) => b.savedTokens - a.savedTokens || b.beforeTokens - a.beforeTokens);
+}
+
+function getSectionPriority(savedTokens: number): SectionImpact["priority"] {
+  if (savedTokens >= 700) return "HIGH";
+  if (savedTokens >= 250) return "MEDIUM";
+  return "LOW";
+}
+
+function estimateSectionAfterTokens(beforeTokens: number, isTopOffender: boolean): number {
+  if (!isTopOffender && beforeTokens < 350) return beforeTokens;
+  if (beforeTokens >= 1200) return Math.max(220, Math.round(beforeTokens * 0.28));
+  if (beforeTokens >= 700) return Math.max(180, Math.round(beforeTokens * 0.35));
+  if (beforeTokens >= 350) return Math.max(140, Math.round(beforeTokens * 0.45));
+  if (isTopOffender && beforeTokens >= 180) return Math.max(100, Math.round(beforeTokens * 0.65));
+  return beforeTokens;
+}
+
+function buildSectionRecommendation(heading: string, beforeTokens: number, afterTokens: number, isTopOffender: boolean): string {
+  if (afterTokens >= beforeTokens) return "유지";
+  if (heading === "(preface)") return "전역 서문은 목표와 트리거만 남김";
+  if (isTopOffender && beforeTokens >= 700) return "핵심 규칙만 남기고 절차/예시는 온디맨드 문서로 분리";
+  if (isTopOffender) return "반복 설명을 줄이고 실행 기준만 유지";
+  return "상황별 세부 내용은 필요 시 참조로 전환";
 }
 
 function buildImpactComparison(
