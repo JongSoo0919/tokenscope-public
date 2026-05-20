@@ -59,7 +59,50 @@ body {
 .session-item.active { background: var(--surface2); border-left: 3px solid var(--accent); }
 .session-project { font-weight: 600; color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-id { color: var(--muted); font-size: 11px; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-context { color: var(--muted); font-size: 11px; line-height: 1.35; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.session-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.session-sort {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  min-width: 0;
+}
+.session-sort .btn {
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.session-theme {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 86px;
+  gap: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px;
+}
+.session-theme button {
+  min-height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.session-theme button.active {
+  background: var(--surface2);
+  color: var(--text);
+}
 
 /* Cards */
 .card {

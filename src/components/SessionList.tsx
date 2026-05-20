@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { SessionFile } from "../lib/types";
 import { DiagnosticResult } from "../lib/analyzer";
+import { isHumanVisibleMessage } from "../lib/parser";
 
 type SortMode = "latest" | "score";
+type SessionListTheme = "default" | "cmux";
 
 interface Props {
   sessions: SessionFile[];
@@ -38,6 +40,15 @@ function providerStyle(provider: string) {
 
 export function SessionList({ sessions, selectedPath, onSelect, loading, error, diagnostics }: Props) {
   const [sortMode, setSortMode] = useState<SortMode>("latest");
+  const [theme, setTheme] = useState<SessionListTheme>(() => {
+    const saved = localStorage.getItem("tokenscope.sessionListTheme");
+    return saved === "cmux" ? "cmux" : "default";
+  });
+
+  const updateTheme = (next: SessionListTheme) => {
+    setTheme(next);
+    localStorage.setItem("tokenscope.sessionListTheme", next);
+  };
 
   if (loading) return <div className="empty"><span className="spinner" /></div>;
   if (error)   return <div className="empty">{error}</div>;
@@ -50,7 +61,16 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
     );
   }
 
-  const sorted = [...sessions].sort((a, b) => {
+  const visibleSessions = theme === "cmux" ? compactCmuxSessions(sessions) : sessions;
+  const sorted = [...visibleSessions].sort((a, b) => {
+    if (theme === "cmux") {
+      const ao = a.external_session_order;
+      const bo = b.external_session_order;
+      if (ao !== undefined && bo !== undefined && ao !== bo) return ao - bo;
+      if (ao !== undefined && bo === undefined) return -1;
+      if (ao === undefined && bo !== undefined) return 1;
+    }
+
     if (sortMode === "score") {
       const sa = diagnostics?.get(a.path)?.healthScore;
       const sb = diagnostics?.get(b.path)?.healthScore;
@@ -64,24 +84,36 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
 
   return (
     <div>
-      {/* 정렬 토글 */}
-      <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
-        <button
-          className={`btn ${sortMode === "latest" ? "primary" : "ghost"}`}
-          style={{ flex: 1, fontSize: 11, padding: "4px 6px" }}
-          onClick={() => setSortMode("latest")}
-        >최신순</button>
-        <button
-          className={`btn ${sortMode === "score" ? "primary" : "ghost"}`}
-          style={{ flex: 1, fontSize: 11, padding: "4px 6px" }}
-          onClick={() => setSortMode("score")}
-        >점수순</button>
+      <div className="session-toolbar">
+        <div className="session-sort">
+          <button
+            className={`btn ${sortMode === "latest" ? "primary" : "ghost"}`}
+            onClick={() => setSortMode("latest")}
+          >최신순</button>
+          <button
+            className={`btn ${sortMode === "score" ? "primary" : "ghost"}`}
+            onClick={() => setSortMode("score")}
+          >점수순</button>
+        </div>
+        <div className="session-theme">
+          <button
+            className={theme === "default" ? "active" : ""}
+            onClick={() => updateTheme("default")}
+            title="첫 요청과 시작 폴더 기준으로 표시"
+          >기본</button>
+          <button
+            className={theme === "cmux" ? "active" : ""}
+            onClick={() => updateTheme("cmux")}
+            title="cmux 세션명을 우선 표시"
+          >cmux</button>
+        </div>
       </div>
 
       {sorted.map(s => {
         const diag = diagnostics?.get(s.path);
         const provider = diag?.session.provider ?? "claude";
         const pStyle = providerStyle(provider);
+        const display = getSessionDisplay(s, diag, theme);
 
         return (
           <div
@@ -90,8 +122,8 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
             onClick={() => onSelect(s)}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
-              <div className="session-project" title={s.project} style={{ flex: 1 }}>
-                {decodeProjectName(s.project)}
+              <div className="session-project" title={display.title} style={{ flex: 1 }}>
+                {display.title}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                 <span style={{
@@ -113,7 +145,8 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
                 )}
               </div>
             </div>
-            <div className="session-id" title={s.session_id}>{s.session_id.slice(0, 18)}…</div>
+            <div className="session-id" title={display.subtitle}>{display.subtitle}</div>
+            {display.context && <div className="session-context" title={display.context}>{display.context}</div>}
             <div className="session-meta">{formatTime(s.modified)} · {formatBytes(s.size_bytes)}</div>
           </div>
         );
@@ -126,4 +159,65 @@ function decodeProjectName(raw: string): string {
   try {
     return decodeURIComponent(raw.replace(/-/g, "/")).split("/").filter(Boolean).pop() ?? raw;
   } catch { return raw; }
+}
+
+function getSessionDisplay(session: SessionFile, diagnostic: DiagnosticResult | undefined, theme: SessionListTheme) {
+  const userMessages = diagnostic?.session.messages
+    .filter(m => m.role === "user" && isHumanVisibleMessage(m) && m.contentText.trim().length > 0) ?? [];
+  const firstRequest = summarizeRequest(userMessages[0]?.contentText);
+  const recentRequest = summarizeRequest(userMessages[userMessages.length - 1]?.contentText);
+  const projectPath = compactPath(session.project_path);
+  const projectName = decodeProjectName(session.project);
+  const fallbackTitle = firstRequest || projectName || session.session_id.slice(0, 18);
+
+  if (theme === "cmux" && session.external_session_name) {
+    return {
+      title: summarizeRequest(session.external_session_name, 54),
+      subtitle: ["cmux", projectPath || projectName].filter(Boolean).join(" · "),
+      context: firstRequest ? `첫 요청: ${firstRequest}` : undefined,
+    };
+  }
+
+  return {
+    title: fallbackTitle,
+    subtitle: projectPath || projectName,
+    context: recentRequest && recentRequest !== firstRequest ? `최근: ${recentRequest}` : undefined,
+  };
+}
+
+function compactCmuxSessions(sessions: SessionFile[]): SessionFile[] {
+  const byCmuxWorkspace = new Map<number, SessionFile>();
+  const rest: SessionFile[] = [];
+
+  for (const session of sessions) {
+    const order = session.external_session_order;
+    if (order === undefined) {
+      rest.push(session);
+      continue;
+    }
+
+    const previous = byCmuxWorkspace.get(order);
+    if (!previous || session.modified > previous.modified) {
+      byCmuxWorkspace.set(order, session);
+    }
+  }
+
+  return [...byCmuxWorkspace.values(), ...rest];
+}
+
+function summarizeRequest(raw: string | undefined, max = 58): string {
+  if (!raw) return "";
+  const text = raw
+    .replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function compactPath(path: string | undefined): string {
+  if (!path) return "";
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length <= 2) return path;
+  return parts.slice(-2).join("/");
 }

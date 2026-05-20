@@ -1,6 +1,9 @@
 export interface SessionFile {
   session_id: string;
   project: string;
+  project_path?: string;
+  external_session_name?: string;
+  external_session_order?: number;
   path: string;
   size_bytes: number;
   modified: number;
