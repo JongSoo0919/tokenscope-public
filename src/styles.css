@@ -59,7 +59,43 @@ body {
 .session-item.active { background: var(--surface2); border-left: 3px solid var(--accent); }
 .session-project { font-weight: 600; color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-id { color: var(--muted); font-size: 11px; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-context { color: var(--muted); font-size: 11px; line-height: 1.35; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.session-controls {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.session-control-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.session-segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px;
+}
+.session-segmented button {
+  min-height: 26px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.session-segmented button.active {
+  background: var(--surface2);
+  color: var(--text);
+}
 
 /* Cards */
 .card {

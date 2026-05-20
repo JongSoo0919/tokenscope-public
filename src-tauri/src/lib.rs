@@ -1,10 +1,13 @@
 use std::fs;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(serde::Serialize)]
 pub struct SessionFile {
     pub session_id: String,
     pub project: String,
+    pub project_path: Option<String>,
+    pub external_session_name: Option<String>,
     pub path: String,
     pub size_bytes: u64,
     pub modified: u64,
@@ -20,11 +23,12 @@ pub struct ReadResult {
 fn list_sessions() -> Result<Vec<SessionFile>, String> {
     let home = dirs_next().map_err(|e| e.to_string())?;
     let mut sessions = Vec::new();
+    let cmux_titles = read_cmux_workspace_titles(&home);
 
     // 1. Claude Sessions
     let claude_projects_dir = home.join(".claude").join("projects");
     if claude_projects_dir.exists() {
-        scan_dir_for_sessions(&claude_projects_dir, "claude", &mut sessions, false);
+        scan_dir_for_sessions(&claude_projects_dir, "claude", &mut sessions, false, &cmux_titles);
     }
 
     // 2. Gemini/OMC Sessions (~/.gemini/tmp)
@@ -35,7 +39,7 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
                 let path = entry.path();
                 if path.is_dir() {
                     let project_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("gemini");
-                    scan_dir_for_sessions(&path, project_name, &mut sessions, true);
+                    scan_dir_for_sessions(&path, project_name, &mut sessions, true, &cmux_titles);
                 }
             }
         }
@@ -44,13 +48,13 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
     // 3. Global OMC Sessions (~/.omc/state/sessions)
     let omc_sessions_dir = home.join(".omc").join("state").join("sessions");
     if omc_sessions_dir.exists() {
-        scan_dir_for_sessions(&omc_sessions_dir, "omc-global", &mut sessions, true);
+        scan_dir_for_sessions(&omc_sessions_dir, "omc-global", &mut sessions, true, &cmux_titles);
     }
 
     // 4. Codex Sessions (~/.codex/sessions/YYYY/MM/DD/*.jsonl)
     let codex_sessions_dir = home.join(".codex").join("sessions");
     if codex_sessions_dir.exists() {
-        scan_dir_for_sessions(&codex_sessions_dir, "codex", &mut sessions, true);
+        scan_dir_for_sessions(&codex_sessions_dir, "codex", &mut sessions, true, &cmux_titles);
     }
 
     // 5. TokenScope dogfood fixtures (repo-local, visible in the app for demos)
@@ -61,7 +65,7 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
         ];
         for dogfood_sessions_dir in dogfood_candidates {
             if dogfood_sessions_dir.exists() {
-                scan_dir_for_sessions(&dogfood_sessions_dir, "tokenscope-dogfood", &mut sessions, true);
+                scan_dir_for_sessions(&dogfood_sessions_dir, "tokenscope-dogfood", &mut sessions, true, &cmux_titles);
             }
         }
     }
@@ -73,12 +77,18 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
     Ok(sessions)
 }
 
-fn scan_dir_for_sessions(dir: &Path, project_name: &str, sessions: &mut Vec<SessionFile>, recursive: bool) {
+fn scan_dir_for_sessions(
+    dir: &Path,
+    project_name: &str,
+    sessions: &mut Vec<SessionFile>,
+    recursive: bool,
+    cmux_titles: &HashMap<String, String>,
+) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() && recursive {
-                scan_dir_for_sessions(&path, project_name, sessions, true);
+                scan_dir_for_sessions(&path, project_name, sessions, true, cmux_titles);
             } else if path.is_file() {
                 let ext = path.extension().and_then(|e| e.to_str());
                 if ext == Some("jsonl") || ext == Some("json") {
@@ -86,7 +96,7 @@ fn scan_dir_for_sessions(dir: &Path, project_name: &str, sessions: &mut Vec<Sess
                     if is_ignored_file(filename) { continue; }
                     if project_name == "codex" && !codex_has_visible_user_turn(&path) { continue; }
 
-                    if let Some(s) = get_session_file(&path, project_name) {
+                    if let Some(s) = get_session_file(&path, project_name, cmux_titles) {
                         sessions.push(s);
                     }
                 }
@@ -100,7 +110,7 @@ fn is_ignored_file(name: &str) -> bool {
     ignored.contains(&name)
 }
 
-fn get_session_file(path: &PathBuf, project_name: &str) -> Option<SessionFile> {
+fn get_session_file(path: &PathBuf, project_name: &str, cmux_titles: &HashMap<String, String>) -> Option<SessionFile> {
     let metadata = fs::metadata(path).ok()?;
     // Only include files that have some content (min 50 bytes to skip empty/header only)
     if metadata.len() < 50 { return None; }
@@ -112,6 +122,12 @@ fn get_session_file(path: &PathBuf, project_name: &str) -> Option<SessionFile> {
     let session_id = path.file_stem()
         .and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
 
+    let inferred_cwd = if project_name == "codex" {
+        infer_codex_cwd(path)
+    } else {
+        None
+    };
+
     let project = if session_id.contains("dogfood-bad") {
         "dogfood-bad".to_string()
     } else if session_id.contains("dogfood-good") {
@@ -119,14 +135,26 @@ fn get_session_file(path: &PathBuf, project_name: &str) -> Option<SessionFile> {
     } else if session_id.contains("dogfood") {
         "tokenscope-dogfood".to_string()
     } else if project_name == "codex" {
-        infer_codex_project(path).unwrap_or_else(|| project_name.to_string())
+        inferred_cwd
+            .as_ref()
+            .and_then(|cwd| Path::new(cwd).file_name().and_then(|name| name.to_str()))
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| project_name.to_string())
     } else {
         project_name.to_string()
     };
 
+    let project_path = inferred_cwd.or_else(|| infer_project_path_from_name(project_name));
+    let external_session_name = project_path
+        .as_ref()
+        .and_then(|cwd| cmux_titles.get(cwd))
+        .cloned();
+
     Some(SessionFile {
         session_id,
         project,
+        project_path,
+        external_session_name,
         path: path.to_string_lossy().to_string(),
         size_bytes: metadata.len(),
         modified,
@@ -154,15 +182,53 @@ fn codex_has_visible_user_turn(path: &PathBuf) -> bool {
     })
 }
 
-fn infer_codex_project(path: &PathBuf) -> Option<String> {
+fn infer_codex_cwd(path: &PathBuf) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
     let first = content.lines().next()?;
     let value = serde_json::from_str::<serde_json::Value>(first).ok()?;
-    let cwd = value["payload"]["cwd"].as_str()?;
-    Path::new(cwd)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.to_string())
+    value["payload"]["cwd"].as_str().map(|cwd| cwd.to_string())
+}
+
+fn infer_project_path_from_name(project_name: &str) -> Option<String> {
+    if project_name == "claude" || project_name == "codex" || project_name == "omc-global" || project_name == "tokenscope-dogfood" {
+        return None;
+    }
+    let decoded = project_name.replace('-', "/");
+    if decoded.starts_with('/') {
+        Some(decoded)
+    } else {
+        None
+    }
+}
+
+fn read_cmux_workspace_titles(home: &Path) -> HashMap<String, String> {
+    let mut titles = HashMap::new();
+    let path = home
+        .join("Library")
+        .join("Application Support")
+        .join("cmux")
+        .join("session-com.cmuxterm.app.json");
+    let Ok(content) = fs::read_to_string(path) else { return titles; };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else { return titles; };
+    let Some(windows) = value["windows"].as_array() else { return titles; };
+
+    for window in windows {
+        let Some(workspaces) = window["tabManager"]["workspaces"].as_array() else { continue; };
+        for workspace in workspaces {
+            let Some(cwd) = workspace["currentDirectory"].as_str() else { continue; };
+            let title = workspace["processTitle"]
+                .as_str()
+                .filter(|title| !title.trim().is_empty())
+                .or_else(|| workspace["panels"].as_array()
+                    .and_then(|panels| panels.iter().find_map(|panel| panel["title"].as_str())))
+                .map(|title| title.trim().to_string());
+            if let Some(title) = title {
+                titles.entry(cwd.to_string()).or_insert(title);
+            }
+        }
+    }
+
+    titles
 }
 
 #[tauri::command]
