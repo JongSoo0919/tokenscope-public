@@ -2,12 +2,19 @@ use std::fs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
+struct CmuxWorkspace {
+    title: String,
+    order: usize,
+}
+
 #[derive(serde::Serialize)]
 pub struct SessionFile {
     pub session_id: String,
     pub project: String,
     pub project_path: Option<String>,
     pub external_session_name: Option<String>,
+    pub external_session_order: Option<usize>,
     pub path: String,
     pub size_bytes: u64,
     pub modified: u64,
@@ -82,7 +89,7 @@ fn scan_dir_for_sessions(
     project_name: &str,
     sessions: &mut Vec<SessionFile>,
     recursive: bool,
-    cmux_titles: &HashMap<String, String>,
+    cmux_titles: &HashMap<String, CmuxWorkspace>,
 ) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -110,7 +117,7 @@ fn is_ignored_file(name: &str) -> bool {
     ignored.contains(&name)
 }
 
-fn get_session_file(path: &PathBuf, project_name: &str, cmux_titles: &HashMap<String, String>) -> Option<SessionFile> {
+fn get_session_file(path: &PathBuf, project_name: &str, cmux_titles: &HashMap<String, CmuxWorkspace>) -> Option<SessionFile> {
     let metadata = fs::metadata(path).ok()?;
     // Only include files that have some content (min 50 bytes to skip empty/header only)
     if metadata.len() < 50 { return None; }
@@ -145,16 +152,18 @@ fn get_session_file(path: &PathBuf, project_name: &str, cmux_titles: &HashMap<St
     };
 
     let project_path = inferred_cwd.or_else(|| infer_project_path_from_name(project_name));
-    let external_session_name = project_path
+    let cmux_workspace = project_path
         .as_ref()
-        .and_then(|cwd| cmux_titles.get(cwd))
-        .cloned();
+        .and_then(|cwd| cmux_titles.get(cwd));
+    let external_session_name = cmux_workspace.map(|workspace| workspace.title.clone());
+    let external_session_order = cmux_workspace.map(|workspace| workspace.order);
 
     Some(SessionFile {
         session_id,
         project,
         project_path,
         external_session_name,
+        external_session_order,
         path: path.to_string_lossy().to_string(),
         size_bytes: metadata.len(),
         modified,
@@ -201,7 +210,7 @@ fn infer_project_path_from_name(project_name: &str) -> Option<String> {
     }
 }
 
-fn read_cmux_workspace_titles(home: &Path) -> HashMap<String, String> {
+fn read_cmux_workspace_titles(home: &Path) -> HashMap<String, CmuxWorkspace> {
     let mut titles = HashMap::new();
     let path = home
         .join("Library")
@@ -212,6 +221,7 @@ fn read_cmux_workspace_titles(home: &Path) -> HashMap<String, String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else { return titles; };
     let Some(windows) = value["windows"].as_array() else { return titles; };
 
+    let mut order = 0;
     for window in windows {
         let Some(workspaces) = window["tabManager"]["workspaces"].as_array() else { continue; };
         for workspace in workspaces {
@@ -223,8 +233,9 @@ fn read_cmux_workspace_titles(home: &Path) -> HashMap<String, String> {
                     .and_then(|panels| panels.iter().find_map(|panel| panel["title"].as_str())))
                 .map(|title| title.trim().to_string());
             if let Some(title) = title {
-                titles.entry(cwd.to_string()).or_insert(title);
+                titles.entry(cwd.to_string()).or_insert(CmuxWorkspace { title, order });
             }
+            order += 1;
         }
     }
 

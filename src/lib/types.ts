@@ -3,6 +3,7 @@ export interface SessionFile {
   project: string;
   project_path?: string;
   external_session_name?: string;
+  external_session_order?: number;
   path: string;
   size_bytes: number;
   modified: number;

@@ -62,6 +62,14 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
   }
 
   const sorted = [...sessions].sort((a, b) => {
+    if (theme === "cmux") {
+      const ao = a.external_session_order;
+      const bo = b.external_session_order;
+      if (ao !== undefined && bo !== undefined && ao !== bo) return ao - bo;
+      if (ao !== undefined && bo === undefined) return -1;
+      if (ao === undefined && bo !== undefined) return 1;
+    }
+
     if (sortMode === "score") {
       const sa = diagnostics?.get(a.path)?.healthScore;
       const sb = diagnostics?.get(b.path)?.healthScore;
