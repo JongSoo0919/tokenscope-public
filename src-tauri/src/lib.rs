@@ -212,7 +212,6 @@ fn infer_project_path_from_name(project_name: &str) -> Option<String> {
 
 fn read_cmux_workspace_titles(home: &Path) -> HashMap<String, CmuxWorkspace> {
     let mut titles = HashMap::new();
-    let mut cwd_counts: HashMap<String, usize> = HashMap::new();
     let path = home
         .join("Library")
         .join("Application Support")
@@ -227,7 +226,6 @@ fn read_cmux_workspace_titles(home: &Path) -> HashMap<String, CmuxWorkspace> {
         let Some(workspaces) = window["tabManager"]["workspaces"].as_array() else { continue; };
         for workspace in workspaces {
             let Some(cwd) = workspace["currentDirectory"].as_str() else { continue; };
-            *cwd_counts.entry(cwd.to_string()).or_insert(0) += 1;
             let title = workspace["processTitle"]
                 .as_str()
                 .filter(|title| !title.trim().is_empty())
@@ -240,8 +238,6 @@ fn read_cmux_workspace_titles(home: &Path) -> HashMap<String, CmuxWorkspace> {
             order += 1;
         }
     }
-
-    titles.retain(|cwd, _| cwd_counts.get(cwd).copied().unwrap_or(0) == 1);
 
     titles
 }

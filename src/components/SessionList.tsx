@@ -61,7 +61,8 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
     );
   }
 
-  const sorted = [...sessions].sort((a, b) => {
+  const visibleSessions = theme === "cmux" ? compactCmuxSessions(sessions) : sessions;
+  const sorted = [...visibleSessions].sort((a, b) => {
     if (theme === "cmux") {
       const ao = a.external_session_order;
       const bo = b.external_session_order;
@@ -182,6 +183,26 @@ function getSessionDisplay(session: SessionFile, diagnostic: DiagnosticResult | 
     subtitle: projectPath || projectName,
     context: recentRequest && recentRequest !== firstRequest ? `최근: ${recentRequest}` : undefined,
   };
+}
+
+function compactCmuxSessions(sessions: SessionFile[]): SessionFile[] {
+  const byCmuxWorkspace = new Map<number, SessionFile>();
+  const rest: SessionFile[] = [];
+
+  for (const session of sessions) {
+    const order = session.external_session_order;
+    if (order === undefined) {
+      rest.push(session);
+      continue;
+    }
+
+    const previous = byCmuxWorkspace.get(order);
+    if (!previous || session.modified > previous.modified) {
+      byCmuxWorkspace.set(order, session);
+    }
+  }
+
+  return [...byCmuxWorkspace.values(), ...rest];
 }
 
 function summarizeRequest(raw: string | undefined, max = 58): string {
