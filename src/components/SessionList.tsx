@@ -75,32 +75,29 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
 
   return (
     <div>
-      {/* 정렬 토글 */}
-      <div className="session-controls">
-        <div className="session-control-label">세션 리스트 테마</div>
-        <div className="session-segmented">
+      <div className="session-toolbar">
+        <div className="session-sort">
+          <button
+            className={`btn ${sortMode === "latest" ? "primary" : "ghost"}`}
+            onClick={() => setSortMode("latest")}
+          >최신순</button>
+          <button
+            className={`btn ${sortMode === "score" ? "primary" : "ghost"}`}
+            onClick={() => setSortMode("score")}
+          >점수순</button>
+        </div>
+        <div className="session-theme">
           <button
             className={theme === "default" ? "active" : ""}
             onClick={() => updateTheme("default")}
+            title="첫 요청과 시작 폴더 기준으로 표시"
           >기본</button>
           <button
             className={theme === "cmux" ? "active" : ""}
             onClick={() => updateTheme("cmux")}
+            title="cmux 세션명을 우선 표시"
           >cmux</button>
         </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
-        <button
-          className={`btn ${sortMode === "latest" ? "primary" : "ghost"}`}
-          style={{ flex: 1, fontSize: 11, padding: "4px 6px" }}
-          onClick={() => setSortMode("latest")}
-        >최신순</button>
-        <button
-          className={`btn ${sortMode === "score" ? "primary" : "ghost"}`}
-          style={{ flex: 1, fontSize: 11, padding: "4px 6px" }}
-          onClick={() => setSortMode("score")}
-        >점수순</button>
       </div>
 
       {sorted.map(s => {

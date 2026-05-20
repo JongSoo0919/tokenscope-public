@@ -61,38 +61,45 @@ body {
 .session-id { color: var(--muted); font-size: 11px; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-context { color: var(--muted); font-size: 11px; line-height: 1.35; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
-.session-controls {
-  padding: 10px;
+.session-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
-.session-control-label {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  margin-bottom: 6px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.session-segmented {
+.session-sort {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 4px;
+  gap: 6px;
+  min-width: 0;
+}
+.session-sort .btn {
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.session-theme {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 86px;
+  gap: 3px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 3px;
 }
-.session-segmented button {
-  min-height: 26px;
+.session-theme button {
+  min-height: 24px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   cursor: pointer;
 }
-.session-segmented button.active {
+.session-theme button.active {
   background: var(--surface2);
   color: var(--text);
 }
