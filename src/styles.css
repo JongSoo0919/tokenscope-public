@@ -136,6 +136,84 @@ body {
 .btn.ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
 .btn-row { display: flex; gap: 8px; margin-top: 12px; }
 
+.question-candidate {
+  min-height: 116px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 7px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.question-candidate:hover {
+  border-color: var(--accent);
+}
+.question-candidate.active {
+  border-color: var(--accent);
+  background: rgba(108, 142, 255, 0.12);
+}
+.question-candidate span {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+.question-candidate strong {
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 700;
+  overflow: hidden;
+}
+.question-candidate small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.refactor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.refactor-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.refactor-section-title {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.refactor-result-box {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.65;
+  min-height: 54px;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+.refactor-result-box.primary {
+  border-color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+@media (max-width: 900px) {
+  .refactor-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Health score */
 .health-ring { display: flex; align-items: center; gap: 14px; }
 .score-num { font-size: 36px; font-weight: 800; }

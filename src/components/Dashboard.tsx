@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { DiagnosticResult } from "../lib/analyzer";
+import { QuestionRefactorer } from "./QuestionRefactorer";
 
 const TIPS = [
   "전역 CLAUDE.md/AGENTS.md는 없애는 대상이 아니라 모든 프로젝트에 항상 필요한 규칙만 남기는 대상입니다.",
@@ -87,9 +88,12 @@ export function Dashboard({ diagnostics }: Props) {
 
   if (count === 0) {
     return (
-      <div className="empty">
-        분석된 세션이 없습니다.<br />
-        왼쪽 목록에서 세션을 선택하면 자동으로 분석됩니다.
+      <div>
+        <QuestionRefactorer />
+        <div className="empty">
+          분석된 세션이 없습니다.<br />
+          왼쪽 목록에서 세션을 선택하면 자동으로 분석됩니다.
+        </div>
       </div>
     );
   }
@@ -253,6 +257,8 @@ export function Dashboard({ diagnostics }: Props) {
           <ActionBox title="5시간 블록 행동 추천" body={blockAction} accent={recentTokens > 120000 ? "var(--orange)" : "var(--green)"} />
         </div>
       </div>
+
+      <QuestionRefactorer />
 
       {/* 통계 헤더 */}
       <div className="stat-grid" style={{ marginBottom: 16 }}>

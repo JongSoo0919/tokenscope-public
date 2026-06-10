@@ -1,0 +1,4 @@
+# Optional providers (install only if you use them in .env)
+-r requirements-ollama.txt
+langchain-huggingface
+cursor-sdk
