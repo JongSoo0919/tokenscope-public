@@ -6,6 +6,7 @@ import { FixPreview } from "./components/FixPreview";
 import { QuestionGuide } from "./components/QuestionGuide";
 import { Dashboard } from "./components/Dashboard";
 import { ConversationReview } from "./components/ConversationReview";
+import { PromptCoachPanel } from "./components/PromptCoachPanel";
 import { parseSession, isHumanVisibleMessage } from "./lib/parser";
 import { analyzeSession, DiagnosticResult } from "./lib/analyzer";
 import { prescribe, Fix, UsageWindowContext } from "./lib/prescriber";
@@ -228,7 +229,7 @@ export default function App() {
             )}
 
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              {["summary", "conversation", "detail", "guide"].map(tab => (
+              {["summary", "conversation", "coach", "detail", "guide"].map(tab => (
                 <button
                   key={tab}
                   className={`btn ${activeTab === tab ? "active" : ""}`}
@@ -284,6 +285,10 @@ export default function App() {
               <ConversationReview diagnostic={diagnostic} />
             )}
 
+            {activeTab === "coach" && (
+              <PromptCoachPanel diagnostic={diagnostic} />
+            )}
+
             {activeTab === "guide" && (
               <QuestionGuide patterns={diagnostic.patterns} scoreBreakdown={diagnostic.scoreBreakdown} />
             )}
@@ -324,6 +329,7 @@ function getConfigLabel(provider: string): string {
 function getTabLabel(tab: string): string {
   if (tab === "summary") return "처방";
   if (tab === "conversation") return "대화 기록";
+  if (tab === "coach") return "질문 코치";
   if (tab === "detail") return "상세";
   return "질문 가이드";
 }

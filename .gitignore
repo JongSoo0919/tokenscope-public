@@ -9,3 +9,11 @@ src-tauri/target/
 .playwright-mcp/
 .venv/
 __pycache__/
+.run/
+rag/.env
+rag/.venv/
+rag/.chroma/
+rag/.chroma-prompt-coach/
+rag/*.log
+rag/.app.pid
+rag/.app.stdin
