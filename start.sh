@@ -59,8 +59,8 @@ elif lsof -tiTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then
 else
   echo "[rag] API 시작 중: http://127.0.0.1:8000"
   (
-    cd "$RAG_DIR"
-    "$RAG_DIR/.venv/bin/uvicorn" src.api:app --reload --host 127.0.0.1 --port 8000
+    cd "$SCRIPT_DIR"
+    "$RAG_DIR/.venv/bin/uvicorn" tokenscope_rag.api:app --reload --host 127.0.0.1 --port 8000
   ) >"$RAG_LOG_FILE" 2>&1 &
   echo $! > "$RAG_PID_FILE"
 fi

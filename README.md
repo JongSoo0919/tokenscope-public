@@ -61,6 +61,12 @@ TokenScope가 사용자가 바로 답하게 하려는 질문은 네 가지입니
 
 ### 설치 및 실행
 
+이 저장소는 RAG 백엔드를 Git 서브모듈로 사용합니다. 처음 클론한 뒤에는 서브모듈을 먼저 초기화하세요.
+
+```bash
+git submodule update --init --recursive
+```
+
 ```bash
 ./start.sh
 ```
@@ -75,21 +81,30 @@ TokenScope가 사용자가 바로 답하게 하려는 질문은 네 가지입니
 
 | 구성 요소 | `./start.sh` | 별도 실행 |
 |-----------|--------------|-----------|
-| RAG API (`127.0.0.1:8000`) | ✅ | `cd rag && .venv/bin/uvicorn src.api:app --reload --host 127.0.0.1 --port 8000` |
+| RAG API (`127.0.0.1:8000`) | ✅ | `rag/.venv/bin/uvicorn tokenscope_rag.api:app --reload --host 127.0.0.1 --port 8000` |
 | Tauri 데스크톱 앱 (`127.0.0.1:1420`) | ✅ | `yarn tauri dev` |
 | TokenScope CLI (`yarn cli`) | ❌ | 필요할 때 직접 실행 |
-| Wiki 질문 REPL (`rag/src/app.py`) | ❌ | 아래 [Wiki 질문하기](#wiki-질문하기) 참고 |
+| Wiki 질문 REPL | ❌ | 아래 [Wiki 질문하기](#wiki-질문하기) 참고 |
 
 `start.sh`를 실행한 터미널은 Tauri 프로세스를 `wait`하므로 블록됩니다. Wiki 질문이나 `curl` 테스트는 **새 터미널 탭**에서 실행하세요.
+### RAG 서브모듈과 TokenScope 코치
 
-### RAG 백엔드 구성
+범용 RAG 백엔드는 `rag/` 경로의 `yanapang/viola-langchain` 서브모듈입니다. TokenScope 전용 질문 코치 API와 코칭 지식은 이 저장소의 `tokenscope_rag/`에 둡니다.
 
-RAG 백엔드는 이 저장소의 `rag/` 하위에 포함되어 있으며, 내부적으로 LangChain + Chroma를 사용합니다.
+upstream RAG 변경분을 반영하려면 다음 명령으로 서브모듈 포인터를 갱신한 뒤 커밋하세요.
 
-- `rag/wiki`: 일반 RAG 샘플 위키
-- `rag/prompt-coach-wiki`: 질문 리팩토링과 토큰 절약 코칭 지식
-- `rag/.env.example`: 로컬 모델과 인덱스 설정 (`cp rag/.env.example rag/.env` 후 `WIKI_DIR` 수정)
-- `rag/.chroma`, `rag/.chroma-prompt-coach`: 실행 중 생성되는 로컬 벡터 DB
+```bash
+git submodule update --remote rag
+git add rag
+git commit -m "chore: update rag submodule"
+```
+
+- `rag/wiki`: RAG 샘플 위키
+- `rag/.env.example`: 로컬 모델과 인덱스 설정
+- `rag/.chroma`: 실행 중 생성되는 로컬 벡터 DB
+- `tokenscope_rag/api.py`: `/coach-prompt`를 포함한 TokenScope 전용 RAG wrapper
+- `tokenscope_rag/prompt-coach-wiki`: 질문 리팩토링과 토큰 절약 코칭 지식
+- `tokenscope_rag/.chroma-prompt-coach`: 실행 중 생성되는 질문 코치 벡터 DB
 
 RAG API 엔드포인트:
 
@@ -128,8 +143,7 @@ rm -rf rag/.chroma
 `./start.sh`로 API가 이미 떠 있으면 추가 실행은 필요 없습니다. RAG만 단독으로 띄울 때:
 
 ```bash
-cd rag
-.venv/bin/uvicorn src.api:app --reload --host 127.0.0.1 --port 8000
+rag/.venv/bin/uvicorn tokenscope_rag.api:app --reload --host 127.0.0.1 --port 8000
 ```
 
 #### 3. 질문 방법
@@ -151,24 +165,22 @@ curl -X POST http://127.0.0.1:8000/ask \
 **터미널 REPL (LangChain 체인 직접):**
 
 ```bash
-cd rag
-./ask.sh
+./tokenscope_rag/ask.sh
 ```
 
 또는:
 
 ```bash
-cd rag
-.venv/bin/python src/app.py
+rag/.venv/bin/python rag/src/app.py
 ```
 
 `Ask a question:` 프롬프트에 질문을 입력하고, 종료는 `exit`입니다. Wiki 갱신 후 재인덱싱:
 
 ```bash
-./ask.sh --rebuild
+./tokenscope_rag/ask.sh --rebuild
 ```
 
-> **주의:** `python` 또는 `python3`로 실행하지 마세요. macOS 기본 Python 3.9는 타입 문법(`str | None`)을 지원하지 않아 실패합니다. `./ask.sh` 또는 `rag/.venv/bin/python`(Python 3.10+)을 사용하세요.
+> **주의:** `python` 또는 `python3`로 실행하지 마세요. macOS 기본 Python 3.9는 타입 문법(`str | None`)을 지원하지 않아 실패합니다. `./tokenscope_rag/ask.sh` 또는 `rag/.venv/bin/python`(Python 3.10+)을 사용하세요.
 
 ### 데스크톱 앱에서 질문 기능 쓰기
 
@@ -220,8 +232,9 @@ Wiki 질문과의 구분:
 - `src/components/PromptCoachPanel.tsx`: 세션 기반 질문 코치
 - `src/components/FixPreview.tsx`: diff 미리보기, 적용, 안전 안내
 - `src-tauri/src/lib.rs`: 로컬 세션/설정 파일 검색, 읽기, 백업, 복원
-- `rag/src/api.py`: 내장 RAG FastAPI 서버 (`/ask`, `/coach-prompt`)
-- `rag/src/app.py`: Wiki 질문용 터미널 REPL
+- `rag/`: 범용 RAG 서브모듈 (`viola-langchain`)
+- `tokenscope_rag/api.py`: TokenScope RAG API (`/ask`, `/coach-prompt`)
+- `tokenscope_rag/ask.sh`: Wiki 질문용 터미널 REPL 실행 스크립트
 
 ## 개인정보
 

@@ -1,2 +1,0 @@
-# Default: Ollama-only install (see requirements-extra.txt for HF / Cursor)
--r requirements-ollama.txt

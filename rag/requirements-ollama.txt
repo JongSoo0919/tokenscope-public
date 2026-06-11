@@ -1,9 +1,0 @@
-# Minimal deps for the default Ollama setup (~smaller install)
-langchain
-langchain-community
-langchain-ollama
-langchain-chroma
-chromadb
-python-dotenv
-fastapi
-uvicorn[standard]

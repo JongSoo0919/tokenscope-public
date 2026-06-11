@@ -1,8 +1,0 @@
-.env
-.venv/
-.chroma/
-.chroma-prompt-coach/
-*.log
-.app.pid
-.app.stdin
-__pycache__/
