@@ -59,7 +59,7 @@ function ScoreMeter({ label, score, hint }: MeterProps) {
 
 export function SummaryCard({ session, diagnostic }: Props) {
   const { scoreBreakdown: bd, sessionSummary, sessionDigest } = diagnostic;
-  const configLabel = session.provider === "gemini" ? "GEMINI.md" : session.provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const configLabel = session.provider === "gemini" ? "GEMINI.md" : session.provider === "codex" ? "AGENTS.md" : session.provider === "cursor" ? "Cursor Rules" : "CLAUDE.md";
   const userTurns = session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length;
   const internalEvents = Math.max(0, session.messages.length - userTurns);
 

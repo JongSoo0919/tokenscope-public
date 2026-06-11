@@ -1,5 +1,5 @@
 // Actual JSONL/JSON schema from ~/.claude/projects/**/*.jsonl and ~/.gemini/tmp/**/*.json
-// Supports multiple providers: Claude, Gemini, Codex
+// Supports multiple providers: Claude, Gemini, Codex, Cursor
 
 import { Provider, detectProvider, PROVIDER_CONFIGS } from "./providers";
 
@@ -82,6 +82,11 @@ export function isHumanVisibleMessage(message: ParsedMessage): boolean {
   if (message.isToolResult || message.isToolUse) return false;
   const text = message.contentText.trim();
   if (!text) return false;
+  if (text.startsWith("<user_info>")) return false;
+  if (text.startsWith("<git_status>")) return false;
+  if (text.startsWith("<agent_transcripts>")) return false;
+  if (text.startsWith("<rules>")) return false;
+  if (text.startsWith("<agent_skills>")) return false;
   if (text.startsWith("<user_shell_command>")) return false;
   if (text.startsWith("<environment_context>")) return false;
   if (text.startsWith("<permissions instructions>")) return false;
@@ -174,7 +179,9 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
   let totalCacheReadTokens = 0;
   let totalCacheCreationTokens = 0;
   let model = "unknown";
-  let provider: Provider = filePath.includes("/.codex/") || project === "codex" ? "codex" : "claude";
+  let provider: Provider = filePath.includes("/.cursor/chats/") || project === "cursor"
+    ? "cursor"
+    : filePath.includes("/.codex/") || project === "codex" ? "codex" : "claude";
   let startTime = "";
   let endTime = "";
   let fixtureConfigMd: string | undefined;
@@ -195,6 +202,13 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
       provider = entry.payload.model_provider === "openai" ? "codex" : provider;
       model = entry.payload.model ?? (provider === "codex" ? "codex" : model);
       if (entry.payload.timestamp) startTime = entry.payload.timestamp;
+      continue;
+    }
+
+    if (entry.type === "cursor_meta" && entry.payload) {
+      provider = "cursor";
+      model = entry.payload.lastUsedModel ?? entry.payload.model ?? "cursor";
+      if (entry.payload.createdAt) startTime = normalizeCursorTimestamp(entry.payload.createdAt);
       continue;
     }
 
@@ -230,7 +244,7 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
 
     if (parsed.model) {
       model = parsed.model;
-      provider = detectProvider(model);
+      if (provider !== "cursor") provider = detectProvider(model);
     }
 
     const timestamp = parsed.timestamp;
@@ -246,6 +260,13 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
 
       if (config.supportsCache) {
         totalCacheReadTokens += (fieldNames.cacheRead ? parsed.usage[fieldNames.cacheRead] : 0) ?? parsed.usage.cached ?? 0;
+      }
+    } else if (provider === "cursor") {
+      const estimated = estimateTokens(parsed.contentText);
+      if (parsed.role === "assistant") {
+        totalOutputTokens += estimated;
+      } else {
+        totalInputTokens += estimated;
       }
     }
 
@@ -267,6 +288,10 @@ function normalizeEntry(entry: RawEntry): ParsedMessage | null {
 
   if (entry.type === "response_item" && entry.payload) {
     return normalizeCodexResponseItem(entry);
+  }
+
+  if (entry.type === "cursor_message" && entry.payload) {
+    return normalizeCursorMessage(entry);
   }
 
   if (entry.message) {
@@ -318,6 +343,92 @@ function normalizeEntry(entry: RawEntry): ParsedMessage | null {
     model,
     timestamp: entry.timestamp || "",
   };
+}
+
+function normalizeCursorMessage(entry: RawEntry): ParsedMessage | null {
+  const payload = entry.payload;
+  const cursorRole = payload?.role;
+  if (!cursorRole || cursorRole === "system") return null;
+
+  const role: "user" | "assistant" = cursorRole === "assistant" ? "assistant" : "user";
+  const rawContent = payload.content;
+  const rawBlocks = Array.isArray(rawContent) ? rawContent : [];
+  const blocks: RawContentBlock[] = rawBlocks.map((block: any) => ({
+    type: block.type,
+    text: block.text,
+    content: block.text ?? block.content,
+    id: block.toolCallId ?? block.id,
+    name: block.toolName ?? block.name,
+    input: block.args ?? block.input,
+    tool_use_id: block.toolCallId,
+    is_error: block.isError,
+  }));
+
+  let contentText = "";
+  if (typeof rawContent === "string") {
+    contentText = sanitizeCursorContent(rawContent);
+  } else if (rawBlocks.length > 0) {
+    contentText = rawBlocks
+      .map((block: any) => block.text ?? block.content ?? block.result ?? block.args ?? "")
+      .map((value: unknown) => typeof value === "string" ? value : JSON.stringify(value))
+      .filter(Boolean)
+      .join("\n");
+    contentText = sanitizeCursorContent(contentText);
+  }
+
+  const isToolUse = cursorRole === "assistant" && rawBlocks.some((b: any) => b.type === "tool-call" || b.toolCallId);
+  const isToolResult = cursorRole === "tool" || rawBlocks.some((b: any) => b.type === "tool-result");
+  const firstTool = rawBlocks.find((b: any) => b.type === "tool-call" || b.type === "tool-result" || b.toolCallId);
+
+  if (!contentText && isToolUse && firstTool?.toolName) {
+    contentText = `Calling ${firstTool.toolName}...`;
+  }
+
+  return {
+    uuid: payload.id ?? entry.id ?? Math.random().toString(36).substring(7),
+    role,
+    contentText,
+    contentBlocks: blocks,
+    isToolUse,
+    isToolResult,
+    toolName: firstTool?.toolName ?? firstTool?.name,
+    toolUseId: firstTool?.toolCallId ?? firstTool?.id,
+    isToolError: blocks.some(b => b.is_error || isLikelyToolError(b.content ?? b.text ?? "")),
+    usage: payload.usage,
+    model: payload.model,
+    timestamp: normalizeCursorTimestamp(payload.createdAt ?? payload.timestamp ?? payload.time ?? ""),
+  };
+}
+
+function sanitizeCursorContent(text: string): string {
+  const userQueryMatch = text.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/);
+  if (userQueryMatch) return userQueryMatch[1].trim();
+
+  const withoutTimestamp = text.replace(/<timestamp>[\s\S]*?<\/timestamp>/g, "").trim();
+  if (
+    withoutTimestamp.startsWith("<user_info>") ||
+    withoutTimestamp.startsWith("<git_status>") ||
+    withoutTimestamp.startsWith("<agent_transcripts>") ||
+    withoutTimestamp.startsWith("<rules>") ||
+    withoutTimestamp.startsWith("<agent_skills>")
+  ) {
+    return "";
+  }
+
+  return withoutTimestamp;
+}
+
+function normalizeCursorTimestamp(value: unknown): string {
+  if (typeof value === "number") {
+    const millis = value > 10_000_000_000 ? value : value * 1000;
+    return new Date(millis).toISOString();
+  }
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return normalizeCursorTimestamp(numeric);
+    return value;
+  }
+  return "";
 }
 
 function normalizeCodexResponseItem(entry: RawEntry): ParsedMessage | null {

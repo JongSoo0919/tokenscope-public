@@ -1,6 +1,6 @@
 // Provider types and pricing information
 
-export type Provider = "claude" | "gemini" | "codex";
+export type Provider = "claude" | "gemini" | "codex" | "cursor";
 
 export interface ProviderConfig {
   name: string;
@@ -92,6 +92,25 @@ export const PROVIDER_CONFIGS: Record<Provider, ProviderConfig> = {
       contentBlockTypes: ["text", "tool_use", "tool_result"],
     },
   },
+  cursor: {
+    name: "Cursor",
+    supportsCache: false,
+    supportsTools: true,
+    tokenPricing: {
+      inputPricePer1k: 0.003,
+      outputPricePer1k: 0.015,
+      currency: "USD",
+    },
+    jsonlFormat: {
+      hasCacheFields: false,
+      hasToolUseStructure: true,
+      usageFieldNames: {
+        input: "input_tokens",
+        output: "output_tokens",
+      },
+      contentBlockTypes: ["text", "tool-call", "tool-result", "reasoning"],
+    },
+  },
 };
 
 // Detect provider from model name
@@ -106,6 +125,9 @@ export function detectProvider(model: string): Provider {
   }
   if (lower.includes("codex") || lower.includes("openai")) {
     return "codex";
+  }
+  if (lower.includes("cursor") || lower.includes("composer")) {
+    return "cursor";
   }
 
   // Default to claude for unknown models

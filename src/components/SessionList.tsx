@@ -32,6 +32,7 @@ function providerStyle(provider: string) {
     case "claude": return { bg: "rgba(217, 119, 87, 0.1)", color: "#d97757", label: "Claude" };
     case "gemini": return { bg: "rgba(66, 133, 244, 0.1)", color: "#4285f4", label: "Gemini" };
     case "codex":  return { bg: "rgba(16, 163, 127, 0.1)", color: "#10a37f", label: "Codex" };
+    case "cursor": return { bg: "rgba(139, 92, 246, 0.12)", color: "#8b5cf6", label: "Cursor" };
     default:       return { bg: "var(--border)", color: "var(--text-muted)", label: provider };
   }
 }
@@ -45,7 +46,7 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
     return (
       <div className="empty">
         세션 파일을 찾지 못했습니다.<br />
-        Claude Code를 실행한 적이 있는지 확인하세요.
+        Claude, Gemini, Codex, Cursor를 실행한 적이 있는지 확인하세요.
       </div>
     );
   }
@@ -80,7 +81,7 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
 
       {sorted.map(s => {
         const diag = diagnostics?.get(s.path);
-        const provider = diag?.session.provider ?? "claude";
+        const provider = diag?.session.provider ?? inferProviderFromPath(s.path);
         const pStyle = providerStyle(provider);
 
         return (
@@ -120,6 +121,13 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
       })}
     </div>
   );
+}
+
+function inferProviderFromPath(path: string): string {
+  if (path.includes("/.cursor/chats/")) return "cursor";
+  if (path.includes("/.codex/")) return "codex";
+  if (path.includes("/.gemini/") || path.includes("/.omc/")) return "gemini";
+  return "claude";
 }
 
 function decodeProjectName(raw: string): string {

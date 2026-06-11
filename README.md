@@ -1,6 +1,6 @@
 # TokenScope
 
-TokenScope는 Claude, Gemini, Codex 세션 로그를 로컬에서 분석해 사용자가 AI에게 일을 잘 맡기고 있는지 진단하는 데스크톱 앱입니다.
+TokenScope는 Claude, Gemini, Codex, Cursor 세션 로그를 로컬에서 분석해 사용자가 AI에게 일을 잘 맡기고 있는지 진단하는 데스크톱 앱입니다.
 
 단순한 토큰 사용량 가계부가 아니라, 최근 세션을 근거로 "잘 쓰는 중 / 주의 / 낭비 심함"을 판정하고 다음 요청, 세션 분리, 상시 지침 파일 정리 방법을 제안합니다.
 
@@ -23,6 +23,7 @@ ccusage류 도구가 "얼마나 썼는지"를 보여주는 계기판이라면, T
 - Claude: `~/.claude/projects/**/*.jsonl`, `~/.claude/CLAUDE.md`
 - Gemini: `~/.gemini/tmp/**/*.json`, `~/.gemini/GEMINI.md`, `~/.config/gemini-cli/GEMINI.md`
 - Codex: `~/.codex/sessions/**/*.jsonl`, `~/.codex/AGENTS.md`
+- Cursor: `~/.cursor/chats/**/store.db`
 
 ## 진단하는 패턴
 
@@ -76,8 +77,16 @@ git submodule update --init --recursive
 ./stop.sh
 ```
 
-TokenScope는 `http://127.0.0.1:8000/coach-prompt`로 현재 세션 요약, 감지된 낭비 패턴, 최근 사용자 메시지 또는 질문 초안을 보내고 질문 개선안을 받아옵니다.
+`start.sh`가 띄우는 것과 띄우지 않는 것:
 
+| 구성 요소 | `./start.sh` | 별도 실행 |
+|-----------|--------------|-----------|
+| RAG API (`127.0.0.1:8000`) | ✅ | `rag/.venv/bin/uvicorn tokenscope_rag.api:app --reload --host 127.0.0.1 --port 8000` |
+| Tauri 데스크톱 앱 (`127.0.0.1:1420`) | ✅ | `yarn tauri dev` |
+| TokenScope CLI (`yarn cli`) | ❌ | 필요할 때 직접 실행 |
+| Wiki 질문 REPL | ❌ | 아래 [Wiki 질문하기](#wiki-질문하기) 참고 |
+
+`start.sh`를 실행한 터미널은 Tauri 프로세스를 `wait`하므로 블록됩니다. Wiki 질문이나 `curl` 테스트는 **새 터미널 탭**에서 실행하세요.
 ### RAG 서브모듈과 TokenScope 코치
 
 범용 RAG 백엔드는 `rag/` 경로의 `yanapang/viola-langchain` 서브모듈입니다. TokenScope 전용 질문 코치 API와 코칭 지식은 이 저장소의 `tokenscope_rag/`에 둡니다.
@@ -97,15 +106,124 @@ git commit -m "chore: update rag submodule"
 - `tokenscope_rag/prompt-coach-wiki`: 질문 리팩토링과 토큰 절약 코칭 지식
 - `tokenscope_rag/.chroma-prompt-coach`: 실행 중 생성되는 질문 코치 벡터 DB
 
+RAG API 엔드포인트:
+
+| 엔드포인트 | 용도 | 사용처 |
+|------------|------|--------|
+| `POST /ask` | `WIKI_DIR` 마크다운 위키 질의응답 | 터미널 REPL, `curl`, Swagger UI |
+| `POST /ask/stream` | 위와 동일, SSE 스트리밍 | 클라이언트 연동 |
+| `POST /coach-prompt` | 프롬프트 코치 위키 기반 질문 개선 | 데스크톱 앱 질문 코치·리팩토링기 |
+
+데스크톱 앱의 **질문 코치**·**질문 리팩토링기**는 세션 질문 개선용이며, `WIKI_DIR` 위키 검색 UI는 아직 없습니다. Wiki를 물어보려면 아래 API나 REPL을 사용하세요.
+
+### Wiki 질문하기
+
+#### 1. Wiki 경로 설정
+
+`rag/.env`에서 질문할 마크다운 위키 디렉터리를 지정합니다. `**/*.md` 파일만 인덱싱됩니다.
+
+```bash
+cp rag/.env.example rag/.env
+# rag/.env 예시
+WIKI_DIR=/path/to/your/wiki
+OLLAMA_LLM_MODEL=qwen2.5:7b
+OLLAMA_EMBED_MODEL=bge-m3
+RESPONSE_LANGUAGE=ko
+```
+
+Wiki 내용을 바꿨거나 처음 연결했다면 벡터 DB를 다시 만듭니다.
+
+```bash
+rm -rf rag/.chroma
+# 또는 REPL에서 --rebuild (아래 참고)
+```
+
+#### 2. RAG 서버 실행
+
+`./start.sh`로 API가 이미 떠 있으면 추가 실행은 필요 없습니다. RAG만 단독으로 띄울 때:
+
+```bash
+rag/.venv/bin/uvicorn tokenscope_rag.api:app --reload --host 127.0.0.1 --port 8000
+```
+
+#### 3. 질문 방법
+
+**브라우저 (가장 쉬움):** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) → `POST /ask` → Try it out
+
+```json
+{"question": "Viola Wiki 운영 규칙이 뭐야?"}
+```
+
+**curl (새 터미널):**
+
+```bash
+curl -X POST http://127.0.0.1:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Viola Wiki 운영 규칙이 뭐야?"}'
+```
+
+**터미널 REPL (LangChain 체인 직접):**
+
+```bash
+./tokenscope_rag/ask.sh
+```
+
+또는:
+
+```bash
+rag/.venv/bin/python rag/src/app.py
+```
+
+`Ask a question:` 프롬프트에 질문을 입력하고, 종료는 `exit`입니다. Wiki 갱신 후 재인덱싱:
+
+```bash
+./tokenscope_rag/ask.sh --rebuild
+```
+
+> **주의:** `python` 또는 `python3`로 실행하지 마세요. macOS 기본 Python 3.9는 타입 문법(`str | None`)을 지원하지 않아 실패합니다. `./tokenscope_rag/ask.sh` 또는 `rag/.venv/bin/python`(Python 3.10+)을 사용하세요.
+
+### 데스크톱 앱에서 질문 기능 쓰기
+
+`./start.sh`로 앱을 연 뒤:
+
+| 기능 | 위치 | RAG 사용 |
+|------|------|----------|
+| 질문 리팩토링기 | 대시보드 (세션 미선택) | `POST /coach-prompt` |
+| 질문 코치 | 세션 선택 → **질문 코치** 탭 | `POST /coach-prompt` |
+| 질문 가이드 | 세션 선택 → **질문 가이드** 탭 | 없음 (로컬 팁·템플릿) |
+
 ### 빌드
 
 ```bash
 yarn build
 ```
 
+### CLI 및 LangChain 연동
+
+TokenScope 분석기를 데스크톱 앱 없이 CLI로 실행할 수 있습니다.
+
+프로젝트 루트(`tokenscope-public/`)에서 실행하세요. `rag/` 디렉터리에서도 yarn이 루트 `package.json`을 찾아 동작합니다.
+
+```bash
+yarn cli list --provider cursor --limit 5
+yarn cli analyze --provider cursor --format json
+yarn cli export --provider cursor --limit 10 --langchain > cursor-sessions.jsonl
+```
+
+`list`는 기본으로 각 세션을 분석해 카드형 대시보드(건강 점수 바, 양호/주의/위험, 패턴, 요약, 스마트 팁)를 터미널에 보여줍니다. `--sort score`로 문제 세션 우선, `-v`로 경로 표시, `--quick`으로 경로만 빠르게 볼 수 있습니다.
+
+`export --langchain`은 **세션 분석 결과**를 LangChain `Document` 형태의 JSONL로 출력합니다. 각 줄은 `pageContent`와 `metadata`를 포함하므로 `JSONLoader`나 커스텀 로더에서 바로 벡터화할 수 있습니다.
+
+Wiki 질문과의 구분:
+
+| 기능 | 입력 | 출력 |
+|------|------|------|
+| `yarn cli -- export --langchain` | AI 세션 로그 분석 | LangChain `Document` JSONL |
+| `POST /ask` 또는 `rag/src/app.py` | `WIKI_DIR` 마크다운 위키 | RAG 답변 텍스트 |
+
 ## 프로젝트 구조
 
-- `src/lib/parser.ts`: Claude, Gemini, Codex 로그 파싱과 메시지 정규화
+- `src/lib/parser.ts`: Claude, Gemini, Codex, Cursor 로그 파싱과 메시지 정규화
 - `src/lib/analyzer.ts`: 낭비 패턴 감지, 건강 점수, 세션 요약 생성
 - `src/lib/promptCoach.ts`: 질문 후보 추출, 초안 질문 점검, RAG 코치 API 호출
 - `src/lib/prescriber.ts`: 설정 파일 처방, diff, 절약량 추정
@@ -114,7 +232,9 @@ yarn build
 - `src/components/PromptCoachPanel.tsx`: 세션 기반 질문 코치
 - `src/components/FixPreview.tsx`: diff 미리보기, 적용, 안전 안내
 - `src-tauri/src/lib.rs`: 로컬 세션/설정 파일 검색, 읽기, 백업, 복원
-- `rag/src/api.py`: 내장 RAG FastAPI 서버
+- `rag/`: 범용 RAG 서브모듈 (`viola-langchain`)
+- `tokenscope_rag/api.py`: TokenScope RAG API (`/ask`, `/coach-prompt`)
+- `tokenscope_rag/ask.sh`: Wiki 질문용 터미널 REPL 실행 스크립트
 
 ## 개인정보
 
