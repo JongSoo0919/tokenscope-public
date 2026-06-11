@@ -33,11 +33,5 @@
       "icons/128x128@2x.png",
       "icons/icon.png"
     ]
-  },
-  "plugins": {
-    "fs": {
-      "scope": ["$HOME/.claude/**", "$HOME/.tokenscope/**"],
-      "all": false
-    }
   }
 }
