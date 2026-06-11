@@ -2,8 +2,22 @@
 import sys
 from pathlib import Path
 
-# Allow `python src/app.py` from the project root.
 ROOT = Path(__file__).resolve().parent.parent
+
+if sys.version_info < (3, 10):
+    venv_python = ROOT / ".venv" / "bin" / "python"
+    print(
+        f"Python 3.10+ required (current: {sys.version.split()[0]}).\n"
+        f"macOS 기본 python3는 3.9라서 실패합니다. 아래 중 하나를 사용하세요:\n"
+        f"  cd {ROOT} && .venv/bin/python src/app.py\n"
+        + (f"  cd {ROOT} && ./ask.sh\n" if (ROOT / "ask.sh").is_file() else "")
+        + (
+            f"\nvenv가 없으면 프로젝트 루트에서 ./start.sh 를 한 번 실행하세요."
+        ),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

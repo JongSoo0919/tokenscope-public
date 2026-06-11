@@ -13,16 +13,35 @@ cd "$SCRIPT_DIR"
 mkdir -p "$PID_DIR"
 
 # Rust toolchain
-source "$HOME/.cargo/env" 2>/dev/null || true
+if [ -f "$HOME/.cargo/env" ]; then
+  source "$HOME/.cargo/env"
+fi
+
+PYTHON_BIN="python3"
+if [ -x "/opt/homebrew/bin/python3" ]; then
+  PYTHON_BIN="/opt/homebrew/bin/python3"
+fi
+
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+  echo "[rag] Python 3.10 이상이 필요합니다. 현재: $("$PYTHON_BIN" --version 2>&1)"
+  exit 1
+fi
 
 if [ ! -d node_modules ]; then
   echo "[tokenscope] node_modules 없음 — yarn install 실행 중..."
   yarn install
 fi
 
+if [ -x "$RAG_DIR/.venv/bin/python" ] &&
+  ! "$RAG_DIR/.venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+  BACKUP_VENV="$RAG_DIR/.venv.py$(date +%Y%m%d%H%M%S)"
+  echo "[rag] 기존 Python 3.9 가상환경 감지 — $BACKUP_VENV 로 이동"
+  mv "$RAG_DIR/.venv" "$BACKUP_VENV"
+fi
+
 if [ ! -d "$RAG_DIR/.venv" ]; then
   echo "[rag] Python 가상환경 생성 중..."
-  python3 -m venv "$RAG_DIR/.venv"
+  "$PYTHON_BIN" -m venv "$RAG_DIR/.venv"
 fi
 
 if [ ! -f "$RAG_DIR/.env" ]; then

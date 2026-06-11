@@ -17,3 +17,6 @@ rag/.chroma-prompt-coach/
 rag/*.log
 rag/.app.pid
 rag/.app.stdin
+dist-cli/
+rag/.venv.py*/
+rag/*.jsonl

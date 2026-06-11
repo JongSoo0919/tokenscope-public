@@ -171,7 +171,7 @@ export function FixPreview({ fix, onApply, applying }: Props) {
 function MetaRow({ fix, confidence }: { fix: Fix; confidence?: "HIGH" | "MEDIUM" | "LOW" }) {
   const risk = confidence === "LOW" ? "수동 검토" : confidence === "HIGH" ? "낮음" : "중간";
   const target = fix.action.kind === "edit_config_md"
-    ? fix.action.provider === "gemini" ? "GEMINI.md" : fix.action.provider === "codex" ? "AGENTS.md" : "CLAUDE.md"
+    ? fix.action.provider === "gemini" ? "GEMINI.md" : fix.action.provider === "codex" ? "AGENTS.md" : fix.action.provider === "cursor" ? "Cursor Rules" : "CLAUDE.md"
     : "프로젝트 AGENTS.md";
 
   return (

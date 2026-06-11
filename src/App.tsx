@@ -306,6 +306,7 @@ const DETAIL_TIPS: Record<string, string[]> = {
   "CLAUDE.md 최적화": ["항상 필요한 지침은 유지하고, 상황별 긴 절차는 별도 문서나 Skill로 분리하세요."],
   "GEMINI.md 최적화": ["전역 지침에는 핵심 원칙만 두고, 특정 작업 지침은 필요할 때만 읽게 하세요."],
   "AGENTS.md 최적화": ["전역 AGENTS.md는 라우팅 규칙 중심으로 두고, 프로젝트별 상세 지침은 해당 저장소에만 두세요."],
+  "Cursor Rules 최적화": ["Cursor 전역 규칙은 짧게 유지하고, 프로젝트별 규칙은 해당 저장소의 .cursor/rules에 두세요."],
   "재시도 억제": ["동일 에러 반복 시 전략을 수정하도록 설정 파일에 명시하세요."],
   "세션 집중도": ["한 세션에는 하나의 목표만 맡기고, 기획/구현/검증은 별도 세션으로 나누세요."],
 };
@@ -313,6 +314,7 @@ const DETAIL_TIPS: Record<string, string[]> = {
 function getConfigMd(provider: string, claudeMd: string, geminiMd: string, codexMd: string): string {
   if (provider === "gemini") return geminiMd;
   if (provider === "codex") return codexMd;
+  if (provider === "cursor") return "";
   return claudeMd;
 }
 
@@ -323,6 +325,7 @@ function getSessionConfigMd(parsed: ReturnType<typeof parseSession>, claudeMd: s
 function getConfigLabel(provider: string): string {
   if (provider === "gemini") return "GEMINI.md";
   if (provider === "codex") return "AGENTS.md";
+  if (provider === "cursor") return "Cursor Rules";
   return "CLAUDE.md";
 }
 

@@ -85,7 +85,7 @@ export function prescribePattern(pattern: WastePattern, configMdContent: string,
 function prescribeContextBloat(pattern: WastePattern, configMdContent: string, result: DiagnosticResult, usageWindow?: UsageWindowContext): Fix {
   const evidence = pattern.evidence;
   const provider = result.session.provider;
-  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const configFileName = getConfigFileName(provider);
 
   if (!isContextBloatEvidence(evidence)) {
     return buildInfoFix(pattern, [`${configFileName} 내용을 검토하고 불필요한 섹션을 제거하세요.`]);
@@ -215,7 +215,7 @@ function getPatternImpactBasis(type: WastePattern["type"]): string {
 function prescribeRetryStorm(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
   const evidence = pattern.evidence;
   const provider = result.session.provider;
-  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const configFileName = getConfigFileName(provider);
 
   if (!isRetryStormEvidence(evidence)) {
     return buildInfoFix(pattern, ["반복 요청 패턴을 검토하세요."]);
@@ -241,7 +241,7 @@ function prescribeRetryStorm(pattern: WastePattern, result: DiagnosticResult, co
 function prescribeToolThrash(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
   const evidence = pattern.evidence;
   const provider = result.session.provider;
-  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const configFileName = getConfigFileName(provider);
 
   if (!isToolThrashEvidence(evidence)) {
     return buildInfoFix(pattern, ["도구 사용 패턴을 검토하세요."]);
@@ -266,7 +266,7 @@ function prescribeToolThrash(pattern: WastePattern, result: DiagnosticResult, co
 
 function prescribeSessionDiscipline(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
   const provider = result.session.provider;
-  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const configFileName = getConfigFileName(provider);
   const rules = [
     "한 세션에는 하나의 목표만 수행한다. 새 목표가 나오면 현재 결과를 5줄 이내로 요약하고 새 세션을 권장한다.",
     "기획이 끝나고 구현으로 넘어갈 때는 결정 사항, 파일 범위, 완료 조건만 요약하고 새 세션을 권장한다.",
@@ -286,7 +286,7 @@ function prescribeSessionDiscipline(pattern: WastePattern, result: DiagnosticRes
 
 function prescribeRequestCompression(pattern: WastePattern, result: DiagnosticResult, configMdContent: string, usageWindow?: UsageWindowContext): Fix {
   const provider = result.session.provider;
-  const configFileName = provider === "gemini" ? "GEMINI.md" : provider === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const configFileName = getConfigFileName(provider);
   const evidence = pattern.evidence;
   const example = isBroadRequestEvidence(evidence) ? evidence.requests[0] : null;
   const rules = [
@@ -331,6 +331,13 @@ function buildRulesFix(
     },
     beforeAfterComparison,
   };
+}
+
+function getConfigFileName(provider: string): string {
+  if (provider === "gemini") return "GEMINI.md";
+  if (provider === "codex") return "AGENTS.md";
+  if (provider === "cursor") return "Cursor Rules";
+  return "CLAUDE.md";
 }
 
 function prescribeProjectAgentsGuidance(
