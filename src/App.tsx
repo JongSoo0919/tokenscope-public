@@ -37,9 +37,6 @@ export default function App() {
     const init = async () => {
       try {
         const sessionList = await invoke<SessionFile[]>("list_sessions");
-        setSessions(sessionList);
-        setLoadingList(false);
-
         const cMd = await invoke<string>("read_claude_md").catch(() => "");
         const gMd = await invoke<string>("read_gemini_md").catch(() => "");
         const xMd = await invoke<string>("read_codex_md").catch(() => "");
@@ -49,10 +46,9 @@ export default function App() {
 
         if (!initialLoadDone.current && sessionList.length > 0) {
           initialLoadDone.current = true;
-          const recent = sessionList.slice(0, 15); // 분석 범위를 조금 더 확장
           const results = new Map<string, DiagnosticResult>();
           
-          for (const s of recent) {
+          for (const s of sessionList) {
             try {
               const res = await invoke<ReadResult>("read_session", { path: s.path });
               const parsed = parseSession(res.content, s.session_id, s.project, s.path);
@@ -65,6 +61,8 @@ export default function App() {
           }
           setDiagnostics(results);
         }
+        setSessions(sessionList);
+        setLoadingList(false);
       } catch (e) {
         setListError(String(e));
         setLoadingList(false);

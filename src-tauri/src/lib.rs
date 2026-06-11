@@ -64,7 +64,24 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
         scan_cursor_chat_stores(&cursor_chats_dir, &mut sessions);
     }
 
-    // 6. TokenScope dogfood fixtures (repo-local, visible in the app for demos)
+    // 6. Cursor workspace state stores (macOS Cursor default)
+    let cursor_workspace_dir = home
+        .join("Library")
+        .join("Application Support")
+        .join("Cursor")
+        .join("User")
+        .join("workspaceStorage");
+    if cursor_workspace_dir.exists() {
+        scan_cursor_workspace_stores(&cursor_workspace_dir, &mut sessions);
+    }
+
+    // 7. Cursor App agent transcripts (~/.cursor/projects/<project>/agent-transcripts/<id>/<id>.jsonl)
+    let cursor_projects_dir = home.join(".cursor").join("projects");
+    if cursor_projects_dir.exists() {
+        scan_cursor_agent_transcripts(&cursor_projects_dir, &mut sessions);
+    }
+
+    // 8. TokenScope dogfood fixtures (repo-local, visible in the app for demos)
     if let Ok(cwd) = std::env::current_dir() {
         let dogfood_candidates = [
             cwd.join("dogfood").join("sessions"),
@@ -224,6 +241,151 @@ fn get_cursor_session_file(path: &PathBuf) -> Option<SessionFile> {
     })
 }
 
+fn scan_cursor_workspace_stores(dir: &Path, sessions: &mut Vec<SessionFile>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let state_db = path.join("state.vscdb");
+                if state_db.exists() && cursor_state_has_messages(&state_db) {
+                    if let Some(s) = get_cursor_workspace_session_file(&state_db) {
+                        sessions.push(s);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn cursor_state_has_messages(path: &Path) -> bool {
+    let sql = "select count(*) from ItemTable where key in ('aiService.prompts', 'aiService.generations') and length(value) > 2";
+    run_sqlite_query(path, sql)
+        .ok()
+        .and_then(|out| out.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+        > 0
+}
+
+fn get_cursor_workspace_session_file(path: &PathBuf) -> Option<SessionFile> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() < 50 {
+        return None;
+    }
+
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let workspace_id = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("cursor")
+        .to_string();
+    let project = cursor_workspace_project_name(path).unwrap_or_else(|| "cursor".to_string());
+
+    Some(SessionFile {
+        session_id: workspace_id,
+        project,
+        path: path.to_string_lossy().to_string(),
+        size_bytes: metadata.len(),
+        modified,
+    })
+}
+
+fn scan_cursor_agent_transcripts(dir: &Path, sessions: &mut Vec<SessionFile>) {
+    let Ok(projects) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for project_entry in projects.flatten() {
+        let project_path = project_entry.path();
+        if !project_path.is_dir() {
+            continue;
+        }
+
+        let project_id = project_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("cursor");
+        let transcript_root = project_path.join("agent-transcripts");
+        let Ok(transcripts) = fs::read_dir(transcript_root) else {
+            continue;
+        };
+
+        for transcript_entry in transcripts.flatten() {
+            let transcript_dir = transcript_entry.path();
+            if !transcript_dir.is_dir() {
+                continue;
+            }
+
+            let transcript_id = transcript_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("cursor");
+            let transcript_file = transcript_dir.join(format!("{transcript_id}.jsonl"));
+            if transcript_file.exists() {
+                if let Some(s) =
+                    get_cursor_agent_transcript_session_file(&transcript_file, project_id)
+                {
+                    sessions.push(s);
+                }
+            }
+        }
+    }
+}
+
+fn get_cursor_agent_transcript_session_file(
+    path: &PathBuf,
+    project_id: &str,
+) -> Option<SessionFile> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() < 50 {
+        return None;
+    }
+
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let session_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("cursor")
+        .to_string();
+
+    Some(SessionFile {
+        session_id,
+        project: cursor_agent_project_name(project_id),
+        path: path.to_string_lossy().to_string(),
+        size_bytes: metadata.len(),
+        modified,
+    })
+}
+
+fn cursor_agent_project_name(project_id: &str) -> String {
+    if project_id == "empty-window" {
+        return "cursor-empty-window".to_string();
+    }
+
+    if project_id.starts_with("Users-") {
+        return project_id
+            .rsplit("-")
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(project_id)
+            .to_string();
+    }
+
+    project_id.to_string()
+}
+
 fn cursor_project_name(workspace_id: &str) -> String {
     let home = match dirs_next() {
         Ok(home) => home,
@@ -307,6 +469,11 @@ fn read_session(path: String) -> Result<ReadResult, String> {
         return Ok(ReadResult { content, path });
     }
 
+    if is_cursor_state_db(&p) {
+        let content = read_cursor_state_as_jsonl(&p)?;
+        return Ok(ReadResult { content, path });
+    }
+
     let content = fs::read_to_string(&p).map_err(|e| format!("Cannot read {}: {}", path, e))?;
 
     Ok(ReadResult { content, path })
@@ -315,6 +482,142 @@ fn read_session(path: String) -> Result<ReadResult, String> {
 fn is_cursor_store_db(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()) == Some("store.db")
         && path.to_string_lossy().contains("/.cursor/chats/")
+}
+
+fn is_cursor_state_db(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()) == Some("state.vscdb")
+        && path
+            .to_string_lossy()
+            .contains("/Library/Application Support/Cursor/User/workspaceStorage/")
+}
+
+fn read_cursor_state_as_jsonl(path: &Path) -> Result<String, String> {
+    let mut lines = Vec::new();
+
+    lines.push(
+        serde_json::json!({
+            "type": "cursor_meta",
+            "payload": {
+                "model": "cursor",
+                "workspace": cursor_workspace_project_name(path).unwrap_or_else(|| "cursor".to_string()),
+            },
+        })
+        .to_string(),
+    );
+
+    if let Ok(prompts) = read_cursor_state_json_value(path, "aiService.prompts") {
+        if let Some(items) = prompts.as_array() {
+            for (idx, item) in items.iter().enumerate() {
+                let text = item["text"].as_str().unwrap_or("").trim();
+                if text.is_empty() {
+                    continue;
+                }
+                lines.push(
+                    serde_json::json!({
+                        "type": "cursor_message",
+                        "id": format!("prompt-{}", idx),
+                        "payload": {
+                            "id": format!("prompt-{}", idx),
+                            "role": "user",
+                            "content": text,
+                            "model": "cursor",
+                        },
+                    })
+                    .to_string(),
+                );
+            }
+        }
+    }
+
+    if let Ok(generations) = read_cursor_state_json_value(path, "aiService.generations") {
+        if let Some(items) = generations.as_array() {
+            for (idx, item) in items.iter().enumerate() {
+                let text = item["textDescription"].as_str().unwrap_or("").trim();
+                if text.is_empty() {
+                    continue;
+                }
+                lines.push(
+                    serde_json::json!({
+                        "type": "cursor_message",
+                        "id": item["generationUUID"].as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("generation-{}", idx)),
+                        "payload": {
+                            "id": item["generationUUID"].as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("generation-{}", idx)),
+                            "role": "user",
+                            "content": text,
+                            "model": "cursor",
+                            "createdAt": item["unixMs"].as_i64(),
+                        },
+                    })
+                    .to_string(),
+                );
+            }
+        }
+    }
+
+    if lines.len() <= 1 {
+        return Err("Cursor workspace state did not contain readable prompt history".to_string());
+    }
+
+    Ok(lines.join("\n"))
+}
+
+fn read_cursor_state_json_value(path: &Path, key: &str) -> Result<serde_json::Value, String> {
+    let sql = format!(
+        "select hex(value) from ItemTable where key = '{}' limit 1",
+        key.replace('\'', "''")
+    );
+    let raw = run_sqlite_query(path, &sql)?.trim().to_string();
+    if raw.is_empty() {
+        return Err(format!("Cursor state key missing: {}", key));
+    }
+
+    let bytes = decode_hex(&raw)?;
+    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    serde_json::from_str::<serde_json::Value>(&text).map_err(|e| e.to_string())
+}
+
+fn cursor_workspace_project_name(path: &Path) -> Option<String> {
+    let workspace_json = path.parent()?.join("workspace.json");
+    let content = fs::read_to_string(workspace_json).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+
+    if let Some(project) = value["folder"]
+        .as_str()
+        .or_else(|| value["workspace"]["folder"].as_str())
+        .or_else(|| value["uri"].as_str())
+        .and_then(project_name_from_uri)
+    {
+        return Some(project);
+    }
+
+    value["workspace"]
+        .as_str()
+        .and_then(workspace_project_name_from_uri)
+}
+
+fn workspace_project_name_from_uri(uri: &str) -> Option<String> {
+    let path = path_from_file_uri(uri);
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+
+    value["folders"]
+        .as_array()
+        .and_then(|folders| folders.first())
+        .and_then(|folder| folder["path"].as_str().or_else(|| folder["uri"].as_str()))
+        .and_then(project_name_from_uri)
+}
+
+fn project_name_from_uri(uri: &str) -> Option<String> {
+    let decoded = path_from_file_uri(uri);
+    Path::new(&decoded)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_string())
+}
+
+fn path_from_file_uri(uri: &str) -> String {
+    let trimmed = uri.strip_prefix("file://").unwrap_or(uri);
+    percent_decode(trimmed)
 }
 
 fn read_cursor_store_as_jsonl(path: &Path) -> Result<String, String> {
@@ -442,6 +745,28 @@ fn run_sqlite_query(path: &Path, sql: &str) -> Result<String, String> {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(decoded) = u8::from_str_radix(hex, 16) {
+                    out.push(decoded);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+
+    String::from_utf8(out).unwrap_or_else(|_| value.to_string())
 }
 
 fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {

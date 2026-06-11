@@ -5,6 +5,7 @@ import { Provider, detectProvider, PROVIDER_CONFIGS } from "./providers";
 
 export interface RawEntry {
   type?: "user" | "assistant" | "gemini" | "info" | "error" | "file-history-snapshot" | string;
+  role?: "user" | "assistant" | "system" | "tool" | string;
   uuid?: string;
   id?: string; // Gemini uses 'id' instead of 'uuid'
   parentUuid?: string;
@@ -24,7 +25,7 @@ export interface RawEntry {
 }
 
 export interface RawMessage {
-  role: "user" | "assistant";
+  role?: "user" | "assistant";
   model?: string;
   content?: string | RawContentBlock[];
   usage?: RawUsage;
@@ -179,7 +180,10 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
   let totalCacheReadTokens = 0;
   let totalCacheCreationTokens = 0;
   let model = "unknown";
-  let provider: Provider = filePath.includes("/.cursor/chats/") || project === "cursor"
+  let provider: Provider = filePath.includes("/.cursor/chats/")
+    || filePath.includes("/.cursor/projects/")
+    || filePath.includes("/Library/Application Support/Cursor/")
+    || project === "cursor"
     ? "cursor"
     : filePath.includes("/.codex/") || project === "codex" ? "codex" : "claude";
   let startTime = "";
@@ -296,7 +300,8 @@ function normalizeEntry(entry: RawEntry): ParsedMessage | null {
 
   if (entry.message) {
     // Claude style
-    role = entry.message.role;
+    const messageRole = entry.message.role ?? entry.role;
+    role = messageRole === "assistant" ? "assistant" : messageRole === "user" ? "user" : undefined;
     content = entry.message.content;
     usage = entry.message.usage;
     model = entry.message.model;
