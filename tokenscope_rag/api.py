@@ -9,6 +9,7 @@ track upstream without carrying product-specific code.
 import os
 import sys
 import json
+import re
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -49,6 +50,8 @@ import tokenscope_rag.router as router
 
 PROMPT_COACH_WIKI_DIR = ROOT / "tokenscope_rag" / "prompt-coach-wiki"
 PROMPT_COACH_PERSIST_DIR = ROOT / "tokenscope_rag" / ".chroma-prompt-coach"
+LOCAL_WIKI_ROOT = Path(os.environ.get("TOKENSCOPE_WIKI_ROOT", Path.home() / "wiki")).expanduser()
+LOCAL_SKILL_NAMES = {"viola-wiki", "prompt-wiki"}
 IGNORED_SESSION_FILES = {
     "logs.json",
     "projects.json",
@@ -211,6 +214,9 @@ def build_prompt_coach_direct_chain(llm: BaseChatModel):
 _PROVIDER_QA_PROMPT_TEMPLATE = """당신은 TokenScope의 세션 분석 도우미입니다.
 아래는 사용자가 선택한 provider 범위에서 수집한 최근 세션의 질문/답변/스코프 신호입니다.
 반드시 한국어로만 답하고, 제공된 근거 밖의 사실은 단정하지 마세요.
+사용자 질문에 @viola-wiki 또는 @prompt-wiki 스킬 근거가 포함되어 있으면 스킬 근거를 세션 근거보다 우선하세요.
+@viola-wiki는 ~/wiki/viola-wiki의 내부 지식을 바탕으로 답하는 스킬입니다.
+@prompt-wiki는 ~/wiki/prompt-wiki의 지침을 바탕으로 사용자의 질문을 더 작고 명확하며 토큰 소모가 적은 질문으로 바꾸는 스킬입니다.
 질문에 답하면서 다음을 함께 요약하세요.
 - 반복되는 작업 주제
 - 스코프가 넓어지거나 섞이는 패턴
@@ -222,6 +228,9 @@ provider 범위:
 
 스코프 요약:
 {scope_summary}
+
+스킬 근거:
+{skill_context}
 
 세션 근거:
 {context}
@@ -247,7 +256,7 @@ provider 범위:
 def build_provider_qa_chain(llm: BaseChatModel):
     prompt = PromptTemplate(
         template=_PROVIDER_QA_PROMPT_TEMPLATE,
-        input_variables=["provider", "scope_summary", "context", "question"],
+        input_variables=["provider", "scope_summary", "skill_context", "context", "question"],
     )
     return prompt | llm | StrOutputParser()
 
@@ -555,17 +564,27 @@ async def provider_qa(req: ProviderQaRequest):
         raise HTTPException(status_code=503, detail="provider qa not initialized")
 
     provider = (req.provider or "all").strip().lower()
+    skill_mentions = _extract_skill_mentions(question)
+    clean_question = _strip_skill_mentions(question)
+    skill_context, skill_sources = _build_local_skill_context(clean_question, skill_mentions)
+
     sessions = _collect_provider_qa_sessions(provider)
-    if not sessions:
+    if not sessions and not skill_mentions:
         raise HTTPException(status_code=404, detail=f"no sessions found for provider: {provider}")
 
     scope_summary, context, sources = _build_provider_qa_context(sessions)
+    if skill_mentions:
+        scope_summary = _merge_scope_summary(
+            scope_summary,
+            "호출된 스킬: " + ", ".join(f"@{name}" for name in skill_mentions),
+        )
     answer = _provider_qa_chain.invoke(
         {
             "provider": _provider_scope_label(provider),
             "scope_summary": scope_summary,
+            "skill_context": skill_context,
             "context": context,
-            "question": question,
+            "question": clean_question,
         }
     )
 
@@ -573,16 +592,16 @@ async def provider_qa(req: ProviderQaRequest):
         provider=provider,
         question=question,
         answer=answer,
-        sessions_used=len(sources),
-        sources=sources,
+        sessions_used=len(sources) + len(skill_sources),
+        sources=[*skill_sources, *sources],
         scope_summary=scope_summary,
     )
 
     return ProviderQaResponse(
         answer=answer,
         provider=provider,
-        sessions_used=len(sources),
-        sources=sources,
+        sessions_used=len(sources) + len(skill_sources),
+        sources=[*skill_sources, *sources],
         scope_summary=scope_summary,
     )
 
@@ -613,6 +632,173 @@ async def route_stats():
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _extract_skill_mentions(question: str) -> list[str]:
+    lowered = question.lower()
+    mentions: list[str] = []
+    for name in LOCAL_SKILL_NAMES:
+        if f"@{name}" in lowered:
+            mentions.append(name)
+    return _dedupe_keep_order(mentions)
+
+
+def _strip_skill_mentions(question: str) -> str:
+    cleaned = question
+    for name in LOCAL_SKILL_NAMES:
+        cleaned = re.sub(rf"@{re.escape(name)}\b", "", cleaned, flags=re.IGNORECASE)
+    return " ".join(cleaned.split()).strip() or question.strip()
+
+
+def _build_local_skill_context(question: str, skill_names: list[str]) -> tuple[str, list[str]]:
+    if not skill_names:
+        return "호출된 로컬 스킬이 없습니다.", []
+
+    sections: list[str] = []
+    sources: list[str] = []
+    for skill_name in skill_names:
+        skill_dir = LOCAL_WIKI_ROOT / "skills" / skill_name
+        wiki_dir = LOCAL_WIKI_ROOT / skill_name
+        skill_file = skill_dir / "SKILL.md"
+
+        sections.append(f"[스킬 @{skill_name}]")
+        if skill_file.exists():
+            try:
+                skill_text = _truncate_text(skill_file.read_text(encoding="utf-8"), 2_000)
+                sections.append(f"스킬 정의:\n{skill_text}")
+                sources.append(_local_wiki_source_label(skill_file))
+            except OSError:
+                sections.append("스킬 정의를 읽지 못했습니다.")
+        else:
+            sections.append(f"스킬 정의 파일이 없습니다: {skill_file}")
+
+        wiki_matches = _search_local_wiki_files(wiki_dir, question, limit=4)
+        if wiki_matches:
+            for path, excerpt in wiki_matches:
+                sections.append(f"근거 파일: {_local_wiki_source_label(path)}\n{excerpt}")
+                sources.append(_local_wiki_source_label(path))
+        else:
+            sections.append(f"로컬 위키에서 질문과 맞는 문서를 찾지 못했습니다: {wiki_dir}")
+
+        if skill_name == "prompt-wiki":
+            sections.append(
+                "적용 지시: 사용자의 질문 의도를 유지하되, 대상/범위/완료 조건/제외 조건/검증 기준을 분리해 더 작은 질문으로 재작성하세요. "
+                "불필요한 탐색과 반복 호출을 줄이는 방향을 우선하세요."
+            )
+        elif skill_name == "viola-wiki":
+            sections.append(
+                "적용 지시: 위키 근거가 있는 내용만 답하고, 근거가 부족한 부분은 로컬 viola-wiki에서 확인되지 않았다고 말하세요."
+            )
+
+    return "\n\n".join(sections), _dedupe_keep_order(sources)
+
+
+def _search_local_wiki_files(wiki_dir: Path, question: str, *, limit: int) -> list[tuple[Path, str]]:
+    if not wiki_dir.exists() or not wiki_dir.is_dir():
+        return []
+
+    terms = _query_terms(question)
+    candidates: list[tuple[int, float, Path, str]] = []
+    for path in wiki_dir.rglob("*"):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        if path.suffix.lower() not in {".md", ".txt", ".json", ".yaml", ".yml"}:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_size <= 0 or stat.st_size > 500_000:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+        except OSError:
+            continue
+
+        score = _score_local_wiki_text(path, text, terms)
+        if score <= 0 and terms:
+            continue
+        if score <= 0 and not terms:
+            score = 1
+        candidates.append((score, stat.st_mtime, path, text))
+
+    candidates.sort(key=lambda item: (-item[0], -item[1], str(item[2])))
+    return [(path, _best_excerpt(text, terms)) for _, _, path, text in candidates[:limit]]
+
+
+def _query_terms(question: str) -> list[str]:
+    raw_terms = []
+    for token in question.replace("@viola-wiki", "").replace("@prompt-wiki", "").split():
+        normalized = token.strip(".,:;!?()[]{}<>\"'`~").lower()
+        if len(normalized) < 2:
+            continue
+        if normalized in {"그리고", "해서", "관련", "질문", "작업", "어떻게", "좋게", "사용", "확인"}:
+            continue
+        raw_terms.append(normalized)
+    return _dedupe_keep_order(raw_terms)[:16]
+
+
+def _score_local_wiki_text(path: Path, text: str, terms: list[str]) -> int:
+    haystack = f"{path.name}\n{text}".lower()
+    score = 0
+    for term in terms:
+        if term in path.name.lower():
+            score += 8
+        count = haystack.count(term)
+        score += min(count, 6)
+    return score
+
+
+def _best_excerpt(text: str, terms: list[str], *, max_chars: int = 2_200) -> str:
+    compact = "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+    if len(compact) <= max_chars:
+        return compact
+
+    lowered = compact.lower()
+    hit_positions = [lowered.find(term) for term in terms if term and lowered.find(term) >= 0]
+    if hit_positions:
+        start = max(0, min(hit_positions) - 500)
+    else:
+        start = 0
+    end = min(len(compact), start + max_chars)
+    excerpt = compact[start:end].strip()
+    if start > 0:
+        excerpt = "...\n" + excerpt
+    if end < len(compact):
+        excerpt = excerpt + "\n..."
+    return excerpt
+
+
+def _local_wiki_source_label(path: Path) -> str:
+    try:
+        return str(path.relative_to(LOCAL_WIKI_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _merge_scope_summary(left: str, right: str) -> str:
+    left = left.strip()
+    right = right.strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    return f"{left}\n{right}"
 
 def _format_coach_input(req: CoachPromptRequest) -> str:
     parts = [
