@@ -605,6 +605,7 @@ function getConfigFileName(provider: string): string {
   if (provider === "gemini") return "GEMINI.md";
   if (provider === "codex") return "AGENTS.md";
   if (provider === "cursor") return "Cursor Rules";
+  if (provider === "wiki") return "Wiki RAG";
   return "CLAUDE.md";
 }
 

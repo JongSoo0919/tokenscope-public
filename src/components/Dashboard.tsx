@@ -131,10 +131,10 @@ export function Dashboard({ diagnostics }: Props) {
   const avgAction = avg(r => r.scoreBreakdown.actionFocus);
   const totalWasted   = results.reduce((s, r) => s + r.totalWastedTokens, 0);
   const criticalCount = results.filter(r => r.healthScore < 40).length;
-  const providerSegments = ["claude", "gemini", "codex", "cursor"].map((provider, i) => ({
+  const providerSegments = ["claude", "gemini", "codex", "cursor", "wiki"].map((provider, i) => ({
     label: provider,
     value: results.filter(r => r.session.provider === provider).length,
-    color: ["var(--accent)", "var(--green)", "var(--orange)", "#8b5cf6"][i],
+    color: ["var(--accent)", "var(--green)", "var(--orange)", "#8b5cf6", "var(--yellow)"][i],
   })).filter(s => s.value > 0);
   const healthSegments = [
     { label: "양호", value: results.filter(r => r.healthScore >= 70).length, color: "var(--green)" },

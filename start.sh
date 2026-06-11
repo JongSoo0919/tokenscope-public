@@ -8,6 +8,57 @@ RAG_PID_FILE="$PID_DIR/rag.pid"
 APP_PID_FILE="$PID_DIR/tokenscope.pid"
 RAG_LOG_FILE="$PID_DIR/rag.log"
 APP_LOG_FILE="$PID_DIR/tokenscope.log"
+ASK_REPL=false
+RUN_CLI=false
+CLI_ARGS=()
+APP_ALREADY_RUNNING=false
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./start.sh [--ask] [--cli [cli args...]]
+
+Options:
+  --ask, --repl   RAG API와 앱을 띄운 뒤 Wiki 질문 REPL을 같은 터미널에서 실행합니다.
+  --cli           앱 시작 전에 TokenScope CLI를 한 번 실행합니다.
+                  인자가 없으면: list --provider cursor --limit 5
+  --help          도움말을 출력합니다.
+
+Examples:
+  ./start.sh
+  ./start.sh --ask
+  ./start.sh --cli list --provider cursor --limit 5
+  ./start.sh --ask --cli analyze --provider codex
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --ask|--repl)
+      ASK_REPL=true
+      shift
+      ;;
+    --cli)
+      RUN_CLI=true
+      shift
+      CLI_ARGS=("$@")
+      break
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "[tokenscope] 알 수 없는 옵션: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ "$RUN_CLI" = true ] && [ "${#CLI_ARGS[@]}" -eq 0 ]; then
+  CLI_ARGS=(list --provider cursor --limit 5)
+fi
 
 cd "$SCRIPT_DIR"
 mkdir -p "$PID_DIR"
@@ -35,6 +86,11 @@ fi
 if [ ! -d node_modules ]; then
   echo "[tokenscope] node_modules 없음 — yarn install 실행 중..."
   yarn install
+fi
+
+if [ "$RUN_CLI" = true ]; then
+  echo "[tokenscope-cli] 실행 중: yarn cli ${CLI_ARGS[*]}"
+  yarn cli "${CLI_ARGS[@]}"
 fi
 
 if [ -x "$RAG_DIR/.venv/bin/python" ] &&
@@ -75,19 +131,25 @@ echo "[tokenscope] 첫 실행 시 Rust 컴파일로 3-5분 걸릴 수 있습니�
 
 if [ -f "$APP_PID_FILE" ] && kill -0 "$(cat "$APP_PID_FILE")" 2>/dev/null; then
   echo "[tokenscope] 이미 실행 중: PID $(cat "$APP_PID_FILE")"
-  exit 0
-fi
-
-if lsof -tiTCP:1420 -sTCP:LISTEN >/dev/null 2>&1; then
+  APP_ALREADY_RUNNING=true
+elif lsof -tiTCP:1420 -sTCP:LISTEN >/dev/null 2>&1; then
   echo "[tokenscope] 포트 1420이 이미 사용 중입니다. 기존 앱을 사용합니다."
-  exit 0
+  APP_ALREADY_RUNNING=true
+else
+  yarn tauri dev >"$APP_LOG_FILE" 2>&1 &
+  echo $! > "$APP_PID_FILE"
+  echo "[tokenscope] PID $(cat "$APP_PID_FILE") 로 실행 중"
 fi
 
-yarn tauri dev >"$APP_LOG_FILE" 2>&1 &
-echo $! > "$APP_PID_FILE"
-echo "[tokenscope] PID $(cat "$APP_PID_FILE") 로 실행 중"
 echo "[tokenscope] 로그: $APP_LOG_FILE"
 echo "[rag] 로그: $RAG_LOG_FILE"
 echo "[tokenscope] 종료하려면 ./stop.sh 또는 Ctrl+C"
 
-wait "$(cat "$APP_PID_FILE")"
+if [ "$ASK_REPL" = true ]; then
+  echo "[rag] Wiki 질문 REPL 시작 중 — 종료는 exit"
+  "$SCRIPT_DIR/tokenscope_rag/ask.sh"
+fi
+
+if [ "$APP_ALREADY_RUNNING" = false ]; then
+  wait "$(cat "$APP_PID_FILE")"
+fi

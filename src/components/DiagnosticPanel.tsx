@@ -64,7 +64,7 @@ export function DiagnosticPanel({ diagnostic, fixes, onApplyFix, applying }: Pro
                 {isEditConfigMdAction(fix.action) && (
                   <>
                     <div style={{ marginTop: 10, marginBottom: 6, fontSize: 12, color: "var(--muted)" }}>
-                      제안된 {fix.action.provider === "gemini" ? "GEMINI.md" : fix.action.provider === "codex" ? "AGENTS.md" : fix.action.provider === "cursor" ? "Cursor Rules" : "CLAUDE.md"} 변경사항:
+                      제안된 {fix.action.provider === "gemini" ? "GEMINI.md" : fix.action.provider === "codex" ? "AGENTS.md" : fix.action.provider === "cursor" ? "Cursor Rules" : fix.action.provider === "wiki" ? "Wiki RAG" : "CLAUDE.md"} 변경사항:
                     </div>
                     <DiffViewer diff={fix.action.diff} maxLines={40} />
                     <div className="btn-row">

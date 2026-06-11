@@ -185,11 +185,14 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
     || filePath.includes("/Library/Application Support/Cursor/")
     || project === "cursor"
     ? "cursor"
-    : filePath.includes("/.codex/") || project === "codex" ? "codex" : "claude";
+    : filePath.includes("/.codex/") || project === "codex" ? "codex"
+    : filePath.includes("/tokenscope_rag/sessions/") || project === "WIKI" ? "wiki"
+    : "claude";
   let startTime = "";
   let endTime = "";
   let fixtureConfigMd: string | undefined;
   let fixtureName: string | undefined;
+  let hasExplicitCursorUsage = false;
 
   for (const line of lines) {
     if (line.startsWith('{"$set"')) continue;
@@ -213,6 +216,13 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
       provider = "cursor";
       model = entry.payload.lastUsedModel ?? entry.payload.model ?? "cursor";
       if (entry.payload.createdAt) startTime = normalizeCursorTimestamp(entry.payload.createdAt);
+      continue;
+    }
+
+    if (entry.type === "wiki_meta" && entry.payload) {
+      provider = "wiki";
+      model = entry.payload.model ?? "wiki-rag";
+      if (entry.timestamp) startTime = entry.timestamp;
       continue;
     }
 
@@ -248,7 +258,7 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
 
     if (parsed.model) {
       model = parsed.model;
-      if (provider !== "cursor") provider = detectProvider(model);
+      if (provider !== "cursor" && provider !== "wiki") provider = detectProvider(model);
     }
 
     const timestamp = parsed.timestamp;
@@ -256,6 +266,7 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
     if (timestamp && timestamp > endTime) endTime = timestamp;
 
     if (parsed.usage) {
+      if (provider === "cursor") hasExplicitCursorUsage = true;
       const config = PROVIDER_CONFIGS[provider];
       const fieldNames = config.jsonlFormat.usageFieldNames;
 
@@ -277,11 +288,42 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
     messages.push(parsed);
   }
 
+  if (provider === "cursor" && !hasExplicitCursorUsage) {
+    const estimated = estimateCursorCumulativeUsage(messages);
+    totalInputTokens = estimated.input;
+    totalOutputTokens = estimated.output;
+    totalCacheReadTokens = 0;
+    totalCacheCreationTokens = 0;
+  }
+
   return {
     sessionId, project, filePath, messages,
     totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens,
     model, provider, startTime, endTime, parseErrors, fixtureConfigMd, fixtureName,
   };
+}
+
+function estimateCursorCumulativeUsage(messages: ParsedMessage[]): { input: number; output: number } {
+  let cumulativeContextTokens = 0;
+  let input = 0;
+  let output = 0;
+
+  for (const message of messages) {
+    const messageTokens = estimateTokens(message.contentText);
+    const hasAssistantOutput = message.role === "assistant" && (messageTokens > 0 || message.isToolUse);
+
+    if (hasAssistantOutput) {
+      // Cursor store.db commonly lacks provider usage. Approximate Codex-style
+      // per-turn usage by charging the transcript accumulated before each
+      // assistant response as request input, because prior context is replayed.
+      input += cumulativeContextTokens;
+      output += messageTokens;
+    }
+
+    cumulativeContextTokens += messageTokens;
+  }
+
+  return { input, output };
 }
 
 function normalizeEntry(entry: RawEntry): ParsedMessage | null {

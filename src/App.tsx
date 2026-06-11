@@ -77,6 +77,7 @@ export default function App() {
     setFixes([]);
     setApplyMsg(null);
     setLastBackup(null);
+    setListError(null);
     setAnalyzing(true);
 
     try {
@@ -94,6 +95,7 @@ export default function App() {
       setDiagnostics(prev => new Map(prev).set(session.path, diag));
     } catch (e) {
       console.error("Selection analysis failed", e);
+      setSelected(null);
       setListError(`세션 분석 실패: ${String(e)}`);
     } finally {
       setAnalyzing(false);
@@ -305,6 +307,7 @@ const DETAIL_TIPS: Record<string, string[]> = {
   "GEMINI.md 최적화": ["전역 지침에는 핵심 원칙만 두고, 특정 작업 지침은 필요할 때만 읽게 하세요."],
   "AGENTS.md 최적화": ["전역 AGENTS.md는 라우팅 규칙 중심으로 두고, 프로젝트별 상세 지침은 해당 저장소에만 두세요."],
   "Cursor Rules 최적화": ["Cursor 전역 규칙은 짧게 유지하고, 프로젝트별 규칙은 해당 저장소의 .cursor/rules에 두세요."],
+  "Wiki RAG 최적화": ["질문 범위와 찾고 싶은 문서/키워드를 함께 적으면 위키 검색 결과가 더 좁아집니다."],
   "재시도 억제": ["동일 에러 반복 시 전략을 수정하도록 설정 파일에 명시하세요."],
   "세션 집중도": ["한 세션에는 하나의 목표만 맡기고, 기획/구현/검증은 별도 세션으로 나누세요."],
 };
@@ -313,6 +316,7 @@ function getConfigMd(provider: string, claudeMd: string, geminiMd: string, codex
   if (provider === "gemini") return geminiMd;
   if (provider === "codex") return codexMd;
   if (provider === "cursor") return "";
+  if (provider === "wiki") return "";
   return claudeMd;
 }
 
@@ -324,6 +328,7 @@ function getConfigLabel(provider: string): string {
   if (provider === "gemini") return "GEMINI.md";
   if (provider === "codex") return "AGENTS.md";
   if (provider === "cursor") return "Cursor Rules";
+  if (provider === "wiki") return "Wiki RAG";
   return "CLAUDE.md";
 }
 

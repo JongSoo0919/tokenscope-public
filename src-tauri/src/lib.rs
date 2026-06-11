@@ -83,6 +83,16 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
 
     // 8. TokenScope dogfood fixtures (repo-local, visible in the app for demos)
     if let Ok(cwd) = std::env::current_dir() {
+        let wiki_session_candidates = [
+            cwd.join("tokenscope_rag").join("sessions"),
+            cwd.join("..").join("tokenscope_rag").join("sessions"),
+        ];
+        for wiki_sessions_dir in wiki_session_candidates {
+            if wiki_sessions_dir.exists() {
+                scan_dir_for_sessions(&wiki_sessions_dir, "WIKI", &mut sessions, true);
+            }
+        }
+
         let dogfood_candidates = [
             cwd.join("dogfood").join("sessions"),
             cwd.join("..").join("dogfood").join("sessions"),
@@ -208,6 +218,9 @@ fn scan_cursor_chat_stores(dir: &Path, sessions: &mut Vec<SessionFile>) {
 fn get_cursor_session_file(path: &PathBuf) -> Option<SessionFile> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() < 50 {
+        return None;
+    }
+    if !cursor_store_has_readable_blobs(path) {
         return None;
     }
 
@@ -384,6 +397,10 @@ fn cursor_agent_project_name(project_id: &str) -> String {
     }
 
     project_id.to_string()
+}
+
+fn cursor_store_has_readable_blobs(path: &Path) -> bool {
+    run_sqlite_query(path, "select 1 from blobs limit 1").is_ok()
 }
 
 fn cursor_project_name(workspace_id: &str) -> String {
@@ -638,7 +655,7 @@ fn read_cursor_store_as_jsonl(path: &Path) -> Result<String, String> {
 
     loop {
         let sql = format!(
-            "select id, hex(data) from blobs limit {} offset {}",
+            "select id, hex(data) from blobs order by rowid limit {} offset {}",
             batch_size, offset
         );
         let stdout = run_sqlite_query(path, &sql)?;
@@ -720,11 +737,13 @@ fn run_sqlite_query(path: &Path, sql: &str) -> Result<String, String> {
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let outfile = dir.join("out.txt");
 
+    let db_uri = sqlite_immutable_uri(path);
     let command = format!(
-        "sqlite3 -readonly {} {} > {}",
-        shell_quote(&path.to_string_lossy()),
+        "sqlite3 -readonly {} {} > {} 2> {}",
+        shell_quote(&db_uri),
         shell_quote(sql),
-        shell_quote(&outfile.to_string_lossy())
+        shell_quote(&outfile.to_string_lossy()),
+        shell_quote(&dir.join("err.txt").to_string_lossy())
     );
 
     let status = Command::new("sh")
@@ -736,11 +755,32 @@ fn run_sqlite_query(path: &Path, sql: &str) -> Result<String, String> {
     let result = if status.success() {
         fs::read_to_string(&outfile).map_err(|e| e.to_string())
     } else {
-        Err("sqlite3 failed for Cursor store".to_string())
+        let stderr = fs::read_to_string(dir.join("err.txt")).unwrap_or_default();
+        let reason = stderr.trim();
+        if reason.is_empty() {
+            Err(format!(
+                "sqlite3 failed for Cursor store: {}",
+                path.to_string_lossy()
+            ))
+        } else {
+            Err(format!(
+                "sqlite3 failed for Cursor store: {} ({})",
+                path.to_string_lossy(),
+                reason
+            ))
+        }
     };
 
     let _ = fs::remove_dir_all(&dir);
     result
+}
+
+fn sqlite_immutable_uri(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    format!(
+        "file:{}?immutable=1",
+        path.replace('?', "%3f").replace('#', "%23")
+    )
 }
 
 fn shell_quote(value: &str) -> String {
