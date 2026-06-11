@@ -73,20 +73,35 @@ git submodule update --init --recursive
 
 `start.sh`는 내장 RAG API(`rag/`)와 TokenScope Tauri 앱을 함께 실행합니다. 종료는 다음 명령을 사용합니다.
 
+Wiki 질문 REPL까지 한 터미널 흐름에서 바로 열려면 다음처럼 실행합니다.
+
+```bash
+./start.sh --ask
+# 또는
+yarn start:ask
+```
+
+시작하면서 CLI 진단도 한 번 같이 보고 싶으면 `--cli` 뒤에 CLI 인자를 그대로 넘깁니다. 인자를 생략하면 `list --provider cursor --limit 5`가 실행됩니다.
+
+```bash
+./start.sh --cli
+./start.sh --ask --cli list --provider cursor --limit 5
+```
+
 ```bash
 ./stop.sh
 ```
 
-`start.sh`가 띄우는 것과 띄우지 않는 것:
+`start.sh`가 띄우는 것과 옵션으로 붙일 수 있는 것:
 
-| 구성 요소 | `./start.sh` | 별도 실행 |
-|-----------|--------------|-----------|
-| RAG API (`127.0.0.1:8000`) | ✅ | `rag/.venv/bin/uvicorn tokenscope_rag.api:app --reload --host 127.0.0.1 --port 8000` |
-| Tauri 데스크톱 앱 (`127.0.0.1:1420`) | ✅ | `yarn tauri dev` |
-| TokenScope CLI (`yarn cli`) | ❌ | 필요할 때 직접 실행 |
-| Wiki 질문 REPL | ❌ | 아래 [Wiki 질문하기](#wiki-질문하기) 참고 |
+| 구성 요소 | `./start.sh` | 옵션 | 별도 실행 |
+|-----------|--------------|------|-----------|
+| RAG API (`127.0.0.1:8000`) | ✅ | - | `rag/.venv/bin/uvicorn tokenscope_rag.api:app --reload --host 127.0.0.1 --port 8000` |
+| Tauri 데스크톱 앱 (`127.0.0.1:1420`) | ✅ | - | `yarn tauri dev` |
+| TokenScope CLI (`yarn cli`) | 필요 시 1회 실행 | `--cli ...` | `yarn cli ...` |
+| Wiki 질문 REPL | 필요 시 실행 | `--ask` | 아래 [Wiki 질문하기](#wiki-질문하기) 참고 |
 
-`start.sh`를 실행한 터미널은 Tauri 프로세스를 `wait`하므로 블록됩니다. Wiki 질문이나 `curl` 테스트는 **새 터미널 탭**에서 실행하세요.
+`start.sh`를 실행한 터미널은 Tauri 프로세스를 `wait`하므로 블록됩니다. `--ask`를 쓰면 같은 터미널에서 Wiki 질문 REPL을 먼저 실행하고, REPL 종료 후 앱 프로세스를 기다립니다. `curl` 테스트는 **새 터미널 탭**에서 실행하세요.
 ### RAG 서브모듈과 TokenScope 코치
 
 범용 RAG 백엔드는 `rag/` 경로의 `yanapang/viola-langchain` 서브모듈입니다. TokenScope 전용 질문 코치 API와 코칭 지식은 이 저장소의 `tokenscope_rag/`에 둡니다.

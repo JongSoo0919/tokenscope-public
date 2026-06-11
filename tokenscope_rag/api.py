@@ -9,6 +9,7 @@ track upstream without carrying product-specific code.
 import os
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +35,7 @@ from src.loader import load_and_chunk_wiki
 from src.providers import create_embeddings, create_llm
 from src.providers.ollama_health import validate_ollama_models
 from src.vectorstore import build_or_load_vectorstore, get_retriever
+from tokenscope_rag.session_log import log_wiki_exchange
 
 from tokenscope_rag.external_provider import (
     ExternalLLMProvider,
@@ -342,6 +344,13 @@ async def ask(req: AskRequest):
         raise HTTPException(status_code=503, detail="RAG chain not initialized")
 
     answer = _chain.invoke(req.question)
+    log_wiki_exchange(
+        question=req.question.strip(),
+        answer=answer,
+        model=settings_model_label(),
+        provider=settings_provider_label(),
+        wiki_dir=settings_wiki_dir(),
+    )
     return AskResponse(answer=answer)
 
 
@@ -353,8 +362,19 @@ async def ask_stream(req: AskRequest):
         raise HTTPException(status_code=503, detail="RAG chain not initialized")
 
     def token_generator():
+        chunks = []
+        started_at = datetime.now(timezone.utc).isoformat()
         for token in _chain.stream(req.question):
+            chunks.append(str(token))
             yield f"data: {token}\n\n"
+        log_wiki_exchange(
+            question=req.question.strip(),
+            answer="".join(chunks),
+            model=settings_model_label(),
+            provider=settings_provider_label(),
+            wiki_dir=settings_wiki_dir(),
+            started_at=started_at,
+        )
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(token_generator(), media_type="text/event-stream")
@@ -441,3 +461,25 @@ def _format_coach_input(req: CoachPromptRequest) -> str:
             parts.append(f"최근 사용자 질문:\n{messages}")
 
     return "\n\n---\n\n".join(parts)
+
+
+def settings_model_label() -> str:
+    if _settings is None:
+        return "wiki-rag"
+    if _settings.llm_provider == "ollama":
+        return _settings.ollama_llm_model
+    if _settings.llm_provider == "huggingface":
+        return _settings.hf_llm_model
+    if _settings.llm_provider == "openai":
+        return _settings.openai_llm_model
+    if _settings.llm_provider == "cursor":
+        return _settings.cursor_model
+    return "wiki-rag"
+
+
+def settings_provider_label() -> str:
+    return _settings.llm_provider if _settings is not None else "unknown"
+
+
+def settings_wiki_dir() -> str:
+    return _settings.wiki_dir if _settings is not None else ""

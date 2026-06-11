@@ -59,7 +59,11 @@ function ScoreMeter({ label, score, hint }: MeterProps) {
 
 export function SummaryCard({ session, diagnostic }: Props) {
   const { scoreBreakdown: bd, sessionSummary, sessionDigest } = diagnostic;
-  const configLabel = session.provider === "gemini" ? "GEMINI.md" : session.provider === "codex" ? "AGENTS.md" : session.provider === "cursor" ? "Cursor Rules" : "CLAUDE.md";
+  const configLabel = session.provider === "gemini" ? "GEMINI.md" : session.provider === "codex" ? "AGENTS.md" : session.provider === "cursor" ? "Cursor Rules" : session.provider === "wiki" ? "Wiki RAG" : "CLAUDE.md";
+  const tokenLabel = session.provider === "cursor" ? "토큰 사용량 추정" : "토큰 사용량";
+  const tokenNote = session.provider === "cursor"
+    ? "Cursor store.db에 usage 필드가 없는 세션은 메시지 텍스트 길이로 입력/출력을 추정합니다."
+    : null;
   const userTurns = session.messages.filter(m => m.role === "user" && isHumanVisibleMessage(m)).length;
   const internalEvents = Math.max(0, session.messages.length - userTurns);
 
@@ -90,7 +94,12 @@ export function SummaryCard({ session, diagnostic }: Props) {
 
       {/* 토큰 통계 */}
       <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-title">토큰 사용량</div>
+        <div className="card-title">{tokenLabel}</div>
+        {tokenNote && (
+          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4, marginBottom: 10 }}>
+            {tokenNote}
+          </div>
+        )}
         <div className="stat-grid">
           <div className="stat-box">
             <div className="stat-label">입력</div>

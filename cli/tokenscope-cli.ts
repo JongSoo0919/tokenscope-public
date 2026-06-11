@@ -173,6 +173,8 @@ function listSessions(): SessionFile[] {
   scanJsonSessions(join(home, ".omc", "state", "sessions"), "omc-global", sessions, true);
   scanJsonSessions(join(home, ".codex", "sessions"), "codex", sessions, true);
   scanCursorStores(join(home, ".cursor", "chats"), sessions);
+  scanJsonSessions(join(process.cwd(), "tokenscope_rag", "sessions"), "WIKI", sessions, true);
+  scanJsonSessions(join(process.cwd(), "..", "tokenscope_rag", "sessions"), "WIKI", sessions, true);
 
   const seen = new Set<string>();
   return sessions.filter(session => {
@@ -248,6 +250,7 @@ function getSessionFile(path: string, projectName: string): SessionFile | null {
 function getCursorSessionFile(path: string): SessionFile | null {
   const stats = statSync(path);
   if (stats.size < 50) return null;
+  if (!cursorStoreHasReadableBlobs(path)) return null;
 
   const agentId = basename(dirname(path));
   const workspaceId = basename(dirname(dirname(path)));
@@ -260,6 +263,15 @@ function getCursorSessionFile(path: string): SessionFile | null {
   };
 }
 
+function cursorStoreHasReadableBlobs(path: string): boolean {
+  try {
+    sqlite(path, "select 1 from blobs limit 1");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sessionFromPath(path: string): SessionFile {
   if (!existsSync(path)) fail(`Session path not found: ${path}`);
   if (path.includes("/.cursor/chats/") && basename(path) === "store.db") {
@@ -268,7 +280,7 @@ function sessionFromPath(path: string): SessionFile {
     return session;
   }
 
-  const project = path.includes("/.codex/") ? "codex" : path.includes("/.gemini/") ? "gemini" : "claude";
+  const project = path.includes("/tokenscope_rag/sessions/") ? "WIKI" : path.includes("/.codex/") ? "codex" : path.includes("/.gemini/") ? "gemini" : "claude";
   const session = getSessionFile(path, project);
   if (!session) fail(`Session is empty: ${path}`);
   return session;
@@ -317,7 +329,7 @@ function* iterateCursorBlobRows(path: string, batchSize = 10): Generator<string>
   while (true) {
     const rows = sqlite(
       path,
-      `select id, hex(data) from blobs limit ${batchSize} offset ${offset}`,
+      `select id, hex(data) from blobs order by rowid limit ${batchSize} offset ${offset}`,
     );
     const batch = rows.split("\n").map(line => line.trim()).filter(Boolean);
     if (batch.length === 0) break;
@@ -330,7 +342,12 @@ function* iterateCursorBlobRows(path: string, batchSize = 10): Generator<string>
 }
 
 function readCursorMeta(path: string): unknown | null {
-  const raw = sqlite(path, "select value from meta where key = '0' limit 1").trim();
+  let raw = "";
+  try {
+    raw = sqlite(path, "select value from meta where key = '0' limit 1").trim();
+  } catch {
+    return null;
+  }
   if (!raw) return null;
 
   try {
@@ -640,6 +657,7 @@ function printStructured(value: unknown, format: "json" | "jsonl") {
 function inferProvider(session: SessionFile): Provider {
   if (session.path.includes("/.cursor/chats/")) return "cursor";
   if (session.path.includes("/.codex/") || session.project === "codex") return "codex";
+  if (session.path.includes("/tokenscope_rag/sessions/") || session.project === "WIKI") return "wiki";
   if (session.path.includes("/.gemini/") || session.path.includes("/.omc/")) return "gemini";
   return "claude";
 }
@@ -697,7 +715,8 @@ function sqlite(path: string, sql: string): string {
   const outfile = join(dir, "out.txt");
 
   try {
-    const command = `sqlite3 -readonly ${shellQuote(path)} ${shellQuote(sql)} > ${shellQuote(outfile)}`;
+    const dbUri = sqliteImmutableUri(path);
+    const command = `sqlite3 -readonly ${shellQuote(dbUri)} ${shellQuote(sql)} > ${shellQuote(outfile)}`;
     execSync(command, { stdio: ["ignore", "ignore", "pipe"], maxBuffer: 1024 * 1024 });
     return readFileSync(outfile, "utf8");
   } catch (error) {
@@ -705,6 +724,10 @@ function sqlite(path: string, sql: string): string {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function sqliteImmutableUri(path: string): string {
+  return `file:${path.replace(/\?/g, "%3f").replace(/#/g, "%23")}?immutable=1`;
 }
 
 function shellQuote(value: string): string {
@@ -818,6 +841,7 @@ function providerBadge(provider: Provider): string {
   if (provider === "claude") return color("yellow", "Claude");
   if (provider === "gemini") return color("cyan", "Gemini");
   if (provider === "codex") return color("green", "Codex");
+  if (provider === "wiki") return color("yellow", "WIKI");
   return color("magenta", "Cursor");
 }
 
@@ -940,6 +964,7 @@ function providerLabel(provider: Provider): string {
   if (provider === "claude") return "Claude";
   if (provider === "gemini") return "Gemini";
   if (provider === "codex") return "Codex";
+  if (provider === "wiki") return "WIKI";
   return "Cursor";
 }
 
@@ -947,11 +972,12 @@ function printHelp() {
   printCliBanner("로컬 AI 세션 진단 CLI");
   printBox([
     `${color("bold", "Usage")}`,
-    `list    [--provider claude|gemini|codex|cursor] [--limit 20] [--sort latest|score] [--quick] [-v]`,
+    `list    [--provider claude|gemini|codex|cursor|wiki] [--limit 20] [--sort latest|score] [--quick] [-v]`,
     `analyze [session-path] [--format markdown|json|jsonl|langchain-jsonl]`,
     `export  [session-path] [--provider cursor] [--limit 20] [--langchain]`,
     "",
     `${color("bold", "Examples")}`,
+    `yarn cli list --provider wiki --limit 5`,
     `yarn cli list --provider cursor --limit 5`,
     `yarn cli list --sort score --verbose`,
     `yarn cli analyze --format json`,

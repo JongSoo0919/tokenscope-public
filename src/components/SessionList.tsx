@@ -41,12 +41,17 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
   const [sortMode, setSortMode] = useState<SortMode>("latest");
 
   if (loading) return <div className="empty"><span className="spinner" /></div>;
-  if (error)   return <div className="empty">{error}</div>;
   if (sessions.length === 0) {
     return (
       <div className="empty">
-        세션 파일을 찾지 못했습니다.<br />
-        Claude, Gemini, Codex, Cursor를 실행한 적이 있는지 확인하세요.
+        {error ? (
+          error
+        ) : (
+          <>
+            세션 파일을 찾지 못했습니다.<br />
+            Claude, Gemini, Codex, Cursor를 실행한 적이 있는지 확인하세요.
+          </>
+        )}
       </div>
     );
   }
@@ -65,6 +70,21 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
 
   return (
     <div>
+      {error && (
+        <div style={{
+          margin: 10,
+          padding: "8px 10px",
+          borderRadius: 6,
+          background: "rgba(239, 68, 68, 0.08)",
+          border: "1px solid rgba(239, 68, 68, 0.22)",
+          color: "var(--red)",
+          fontSize: 11,
+          lineHeight: 1.4,
+        }}>
+          {error}
+        </div>
+      )}
+
       {/* 정렬 토글 */}
       <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
         <button
@@ -128,6 +148,7 @@ function inferProviderFromPath(path: string): string {
   if (path.includes("/.cursor/projects/")) return "cursor";
   if (path.includes("/Library/Application Support/Cursor/")) return "cursor";
   if (path.includes("/.codex/")) return "codex";
+  if (path.includes("/tokenscope_rag/sessions/")) return "wiki";
   if (path.includes("/.gemini/") || path.includes("/.omc/")) return "gemini";
   return "claude";
 }

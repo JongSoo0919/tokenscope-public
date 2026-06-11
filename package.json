@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "start": "./start.sh",
+    "start:ask": "./start.sh --ask",
+    "start:cli": "./start.sh --cli",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
