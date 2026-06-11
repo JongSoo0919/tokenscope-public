@@ -31,7 +31,7 @@ if [ ! -f "$RAG_DIR/.env" ]; then
 fi
 
 echo "[rag] Python 패키지 확인 중..."
-"$RAG_DIR/.venv/bin/python" -m pip install -q -r "$RAG_DIR/requirements-ollama.txt"
+PIP_DISABLE_PIP_VERSION_CHECK=1 "$RAG_DIR/.venv/bin/python" -m pip install --no-cache-dir -q -r "$RAG_DIR/requirements-ollama.txt"
 
 if [ -f "$RAG_PID_FILE" ] && kill -0 "$(cat "$RAG_PID_FILE")" 2>/dev/null; then
   echo "[rag] 이미 실행 중: PID $(cat "$RAG_PID_FILE")"
