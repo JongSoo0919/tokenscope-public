@@ -1,107 +1,99 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WIKI_ROOT="${WIKI_ROOT:-$HOME/wiki}"
-CODEX_SKILLS_DIR="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}"
+WIKI_ROOT="${TOKENSCOPE_WIKI_ROOT:-$HOME/wiki}"
 LOCAL_SKILLS_DIR="$WIKI_ROOT/skills"
 
 VIOLA_WIKI_DIR="$WIKI_ROOT/viola-wiki"
+VIOLA_FAKE_WIKI_DIR="$WIKI_ROOT/viola-fake-wiki"
 PROMPT_WIKI_DIR="$WIKI_ROOT/prompt-wiki"
 
-mkdir -p "$VIOLA_WIKI_DIR" "$PROMPT_WIKI_DIR"
-mkdir -p "$LOCAL_SKILLS_DIR/viola-wiki" "$LOCAL_SKILLS_DIR/prompt-wiki" "$CODEX_SKILLS_DIR"
+mkdir -p "$VIOLA_WIKI_DIR" "$VIOLA_FAKE_WIKI_DIR" "$PROMPT_WIKI_DIR"
+mkdir -p "$LOCAL_SKILLS_DIR/viola-wiki" "$LOCAL_SKILLS_DIR/viola-fake-wiki" "$LOCAL_SKILLS_DIR/prompt-wiki"
 
 cat > "$LOCAL_SKILLS_DIR/viola-wiki/SKILL.md" <<'EOF'
 ---
 name: viola-wiki
-description: "Use when TokenScope or the user asks questions that should be answered from the local private Viola wiki at ~/wiki/viola-wiki. Never copy this wiki into a repository or expose internal content unnecessarily."
+description: "Use when TokenScope 질문하기 receives @viola-wiki. Read local private Viola knowledge from ~/wiki/viola-wiki and never copy the wiki into a repository."
 ---
 
 # Viola Wiki
 
-Use this skill to answer questions from the private local Viola wiki.
+Use this skill only for questions that mention `@viola-wiki`.
 
 ## Source
 
 - Wiki root: `~/wiki/viola-wiki`
-- This is private company/internal information.
-- Keep the wiki local only. Do not copy, vendor, commit, or push wiki contents into any repository.
+- This is private internal information.
+- Keep the wiki local only. Do not commit, push, vendor, or copy wiki contents into this repository.
 
-## Workflow
+## Behavior
 
-1. Search `~/wiki/viola-wiki` first with filename and text search.
-2. Read only the specific files needed for the question.
-3. Prefer direct wiki evidence over memory or assumptions.
-4. If the wiki has no matching evidence, say that the local wiki did not contain enough evidence.
-5. When answering, cite local note paths when useful, but avoid dumping long internal documents.
+1. Search `~/wiki/viola-wiki` for files relevant to the user question.
+2. Answer from matched local wiki evidence first.
+3. If the wiki has no supporting evidence, say that the local `viola-wiki` did not contain enough evidence.
+4. Cite local note paths when useful, but do not dump long internal documents.
+EOF
 
-## TokenScope / Local LLM Use
+cat > "$LOCAL_SKILLS_DIR/viola-fake-wiki/SKILL.md" <<'EOF'
+---
+name: viola-fake-wiki
+description: "Use when TokenScope 질문하기 receives @viola-fake-wiki. Read local fake Viola test data from ~/wiki/viola-fake-wiki for comparing skill answers against the real Viola RAG."
+---
 
-When called from TokenScope's question flow, load this `SKILL.md` plus only the relevant files under `~/wiki/viola-wiki`.
-Do not require network access.
-Do not write back to the wiki unless the user explicitly asks for a wiki edit.
+# Viola Fake Wiki
+
+Use this skill only for questions that mention `@viola-fake-wiki`.
+
+## Source
+
+- Wiki root: `~/wiki/viola-fake-wiki`
+- This is fake test data for comparing TokenScope skill behavior.
+- Do not treat this as authoritative real Viola organization data.
+
+## Behavior
+
+1. Search `~/wiki/viola-fake-wiki` for files relevant to the user question.
+2. If the user asks the Viola team size, answer that it is `20명`.
+3. If the user asks how the parts are organized, answer that they are `VPD-1`, `VPD-2`, and `VPD-3`.
+4. Keep the answer short and make it clear this came from the fake wiki when useful.
 EOF
 
 cat > "$LOCAL_SKILLS_DIR/prompt-wiki/SKILL.md" <<'EOF'
 ---
 name: prompt-wiki
-description: "Use when TokenScope or the user asks questions about local prompt patterns, prompt refactoring, token-saving prompt guidance, or prompt examples stored at ~/wiki/prompt-wiki. Keep this private local wiki out of repositories."
+description: "Use when TokenScope 질문하기 receives @prompt-wiki. Read local prompt guidance from ~/wiki/prompt-wiki and rewrite the user's question into a clearer, lower-token prompt."
 ---
 
 # Prompt Wiki
 
-Use this skill to answer questions from the private local prompt wiki.
+Use this skill only for questions that mention `@prompt-wiki`.
 
 ## Source
 
 - Wiki root: `~/wiki/prompt-wiki`
 - This may contain private prompt patterns, examples, and internal evaluation notes.
-- Keep the wiki local only. Do not copy, vendor, commit, or push wiki contents into any repository.
+- Keep the wiki local only. Do not commit, push, vendor, or copy wiki contents into this repository.
 
-## Workflow
+## Behavior
 
-1. Search `~/wiki/prompt-wiki` first with filename and text search.
-2. Read only the specific files needed for the question.
-3. Use the wiki as the source of truth for prompt style, scoring criteria, refactoring rules, and examples.
-4. If the wiki has no matching evidence, say that the local prompt wiki did not contain enough evidence.
-5. When proposing prompt improvements, ground the recommendation in the matched local notes and prefer shorter, lower-token prompts unless the wiki says otherwise.
-
-## TokenScope / Local LLM Use
-
-When called from TokenScope's question flow, load this `SKILL.md` plus only the relevant files under `~/wiki/prompt-wiki`.
-Do not require network access.
-Do not write back to the wiki unless the user explicitly asks for a wiki edit.
+1. Search `~/wiki/prompt-wiki` for prompt rules and examples relevant to the user question.
+2. Preserve the user's intent.
+3. Rewrite the question with clearer target, scope, output format, exclusions, and verification criteria.
+4. Prefer smaller prompts that reduce exploration, repeated clarification, and unnecessary tool calls.
+5. If the wiki has no supporting evidence, say that the local `prompt-wiki` did not contain enough evidence.
 EOF
 
-link_skill() {
-  local name="$1"
-  local target="$LOCAL_SKILLS_DIR/$name"
-  local link="$CODEX_SKILLS_DIR/$name"
-
-  if [ -L "$link" ]; then
-    ln -sfn "$target" "$link"
-    echo "[skills] updated symlink: $link -> $target"
-    return
-  fi
-
-  if [ -e "$link" ]; then
-    echo "[skills] skip: $link already exists and is not a symlink"
-    echo "         remove or rename it manually if you want init.sh to manage this skill."
-    return
-  fi
-
-  ln -s "$target" "$link"
-  echo "[skills] created symlink: $link -> $target"
-}
-
-link_skill "viola-wiki"
-link_skill "prompt-wiki"
-
-echo
-echo "[wiki] local wiki roots:"
+echo "[wiki] initialized local wiki folders:"
 echo "       $VIOLA_WIKI_DIR"
+echo "       $VIOLA_FAKE_WIKI_DIR"
 echo "       $PROMPT_WIKI_DIR"
 echo
-echo "[wiki] if you downloaded a shared wiki folder, copy it with:"
+echo "[skills] initialized local TokenScope skill files:"
+echo "         $LOCAL_SKILLS_DIR/viola-wiki/SKILL.md"
+echo "         $LOCAL_SKILLS_DIR/viola-fake-wiki/SKILL.md"
+echo "         $LOCAL_SKILLS_DIR/prompt-wiki/SKILL.md"
+echo
+echo "[wiki] if the shared wiki was downloaded under ~/Downloads/wiki, copy it with:"
 echo "       mkdir -p \"$WIKI_ROOT\""
 echo "       cp -R ~/Downloads/wiki/viola-wiki ~/Downloads/wiki/prompt-wiki \"$WIKI_ROOT\"/"

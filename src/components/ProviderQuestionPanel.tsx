@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { requestProviderQa, requestProviderQaHistory, ProviderQaHistoryItem, ProviderScope } from "../lib/providerQa";
+import { requestProviderQa, requestProviderQaHistory } from "../lib/providerQa";
+import type { ProviderQaHistoryItem, ProviderScope } from "../lib/providerQa";
 
 interface Props {
   provider: ProviderScope;
@@ -13,6 +14,7 @@ export function ProviderQuestionPanel({ provider }: Props) {
   const [scopeSummary, setScopeSummary] = useState("");
   const [history, setHistory] = useState<ProviderQaHistoryItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,6 +40,20 @@ export function ProviderQuestionPanel({ provider }: Props) {
     void loadHistory();
   }, [provider]);
 
+  useEffect(() => {
+    if (!loading) {
+      setElapsedSeconds(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.max(1, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
   const run = async () => {
     const trimmed = question.trim();
     if (!trimmed) {
@@ -60,7 +76,7 @@ export function ProviderQuestionPanel({ provider }: Props) {
       setScopeSummary(response.scope_summary ?? "");
       void loadHistory();
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -72,11 +88,14 @@ export function ProviderQuestionPanel({ provider }: Props) {
       <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, marginBottom: 10 }}>
         현재 선택된 범위: <strong style={{ color: "var(--text)" }}>{scopeLabel}</strong>. 이 범위의 세션 질문과 답변, 스코프 신호를 기준으로 물어볼 수 있습니다.
       </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55, marginBottom: 10 }}>
+        로컬 스킬: <code>@viola-wiki</code>는 실제 위키, <code>@viola-fake-wiki</code>는 테스트 위키, <code>@prompt-wiki</code>는 질문 개선 기준을 읽습니다.
+      </div>
 
       <textarea
         value={question}
         onChange={event => setQuestion(event.target.value)}
-        placeholder={`${scopeLabel} 범위에서 어떤 패턴이 반복됐는지 알려줘`}
+        placeholder={`@prompt-wiki ${scopeLabel} 범위에서 다음 질문을 어떻게 바꾸면 좋을지 알려줘`}
         style={{
           width: "100%",
           minHeight: 96,
@@ -94,10 +113,12 @@ export function ProviderQuestionPanel({ provider }: Props) {
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: "var(--muted)" }}>
-          질문 범위: {scopeLabel} · 참고 세션 {sessionsUsed}개
+          {loading
+            ? `로컬 LLM 답변 생성 중 · ${elapsedSeconds || 1}초 경과 · 오래 걸릴 수 있습니다`
+            : `질문 범위: ${scopeLabel} · 참고 근거 ${sessionsUsed}개`}
         </div>
         <button className="btn active" onClick={run} disabled={loading}>
-          {loading ? "질문 중..." : "질문하기"}
+          {loading ? `질문 중... ${elapsedSeconds || 1}s` : "질문하기"}
         </button>
       </div>
 
@@ -157,7 +178,7 @@ export function ProviderQuestionPanel({ provider }: Props) {
               }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 6 }}>
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                    {new Date(item.timestamp).toLocaleString("ko-KR")} · 세션 {item.sessions_used}개
+                    {new Date(item.timestamp).toLocaleString("ko-KR")} · 근거 {item.sessions_used}개
                   </div>
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>
                     {item.provider.toUpperCase()}

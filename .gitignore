@@ -19,6 +19,7 @@ rag/.app.pid
 rag/.app.stdin
 tokenscope_rag/.chroma-prompt-coach/
 tokenscope_rag/sessions/
+tokenscope_rag/provider-qa/
 
 dist-cli/
 rag/.venv.py*/
