@@ -75,7 +75,13 @@ fn list_sessions() -> Result<Vec<SessionFile>, String> {
         scan_cursor_workspace_stores(&cursor_workspace_dir, &mut sessions);
     }
 
-    // 7. TokenScope dogfood fixtures (repo-local, visible in the app for demos)
+    // 7. Cursor App agent transcripts (~/.cursor/projects/<project>/agent-transcripts/<id>/<id>.jsonl)
+    let cursor_projects_dir = home.join(".cursor").join("projects");
+    if cursor_projects_dir.exists() {
+        scan_cursor_agent_transcripts(&cursor_projects_dir, &mut sessions);
+    }
+
+    // 8. TokenScope dogfood fixtures (repo-local, visible in the app for demos)
     if let Ok(cwd) = std::env::current_dir() {
         let dogfood_candidates = [
             cwd.join("dogfood").join("sessions"),
@@ -288,6 +294,96 @@ fn get_cursor_workspace_session_file(path: &PathBuf) -> Option<SessionFile> {
         size_bytes: metadata.len(),
         modified,
     })
+}
+
+fn scan_cursor_agent_transcripts(dir: &Path, sessions: &mut Vec<SessionFile>) {
+    let Ok(projects) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for project_entry in projects.flatten() {
+        let project_path = project_entry.path();
+        if !project_path.is_dir() {
+            continue;
+        }
+
+        let project_id = project_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("cursor");
+        let transcript_root = project_path.join("agent-transcripts");
+        let Ok(transcripts) = fs::read_dir(transcript_root) else {
+            continue;
+        };
+
+        for transcript_entry in transcripts.flatten() {
+            let transcript_dir = transcript_entry.path();
+            if !transcript_dir.is_dir() {
+                continue;
+            }
+
+            let transcript_id = transcript_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("cursor");
+            let transcript_file = transcript_dir.join(format!("{transcript_id}.jsonl"));
+            if transcript_file.exists() {
+                if let Some(s) =
+                    get_cursor_agent_transcript_session_file(&transcript_file, project_id)
+                {
+                    sessions.push(s);
+                }
+            }
+        }
+    }
+}
+
+fn get_cursor_agent_transcript_session_file(
+    path: &PathBuf,
+    project_id: &str,
+) -> Option<SessionFile> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() < 50 {
+        return None;
+    }
+
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let session_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("cursor")
+        .to_string();
+
+    Some(SessionFile {
+        session_id,
+        project: cursor_agent_project_name(project_id),
+        path: path.to_string_lossy().to_string(),
+        size_bytes: metadata.len(),
+        modified,
+    })
+}
+
+fn cursor_agent_project_name(project_id: &str) -> String {
+    if project_id == "empty-window" {
+        return "cursor-empty-window".to_string();
+    }
+
+    if project_id.starts_with("Users-") {
+        return project_id
+            .rsplit("-")
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(project_id)
+            .to_string();
+    }
+
+    project_id.to_string()
 }
 
 fn cursor_project_name(workspace_id: &str) -> String {
