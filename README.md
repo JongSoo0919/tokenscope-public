@@ -112,7 +112,10 @@ RAG API 엔드포인트:
 |------------|------|--------|
 | `POST /ask` | `WIKI_DIR` 마크다운 위키 질의응답 | 터미널 REPL, `curl`, Swagger UI |
 | `POST /ask/stream` | 위와 동일, SSE 스트리밍 | 클라이언트 연동 |
-| `POST /coach-prompt` | 프롬프트 코치 위키 기반 질문 개선 | 데스크톱 앱 질문 코치·리팩토링기 |
+| `POST /coach-prompt` | 프롬프트 코치 위키 기반 질문 개선 (Hybrid Router 적용) | 데스크톱 앱 질문 코치·리팩토링기 |
+| `GET /stats/routes` | Internal/External 라우팅 통계 | 대시보드, 모니터링 |
+
+`/coach-prompt`는 **Hybrid AI Router**를 통해 wiki 관련도 점수에 따라 로컬 Ollama(내부) 또는 외부 LLM(Cursor / OpenAI)으로 자동 라우팅됩니다. 응답에는 `route`, `model`, `source`, `max_score` 필드가 포함됩니다. 설정과 통계 확인 방법은 [tokenscope_rag/HYBRID_ROUTER.md](tokenscope_rag/HYBRID_ROUTER.md)를 참고하세요.
 
 데스크톱 앱의 **질문 코치**·**질문 리팩토링기**는 세션 질문 개선용이며, `WIKI_DIR` 위키 검색 UI는 아직 없습니다. Wiki를 물어보려면 아래 API나 REPL을 사용하세요.
 

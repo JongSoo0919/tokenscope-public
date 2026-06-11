@@ -21,6 +21,7 @@ os.chdir(RAG_ROOT)
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langchain_chroma import Chroma
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -28,17 +29,39 @@ from langchain_core.runnables import RunnablePassthrough
 from pydantic import BaseModel
 
 from src.chain import build_rag_chain, format_docs
-from src.config import load_settings
+from src.config import Settings, load_settings
 from src.loader import load_and_chunk_wiki
 from src.providers import create_embeddings, create_llm
 from src.providers.ollama_health import validate_ollama_models
 from src.vectorstore import build_or_load_vectorstore, get_retriever
 
+from tokenscope_rag.external_provider import (
+    ExternalLLMProvider,
+    create_external_provider,
+)
+from tokenscope_rag.route_logger import RouteLogger
+import tokenscope_rag.router as router
+
 PROMPT_COACH_WIKI_DIR = ROOT / "tokenscope_rag" / "prompt-coach-wiki"
 PROMPT_COACH_PERSIST_DIR = ROOT / "tokenscope_rag" / ".chroma-prompt-coach"
 
+# ---------------------------------------------------------------------------
+# Globals set during lifespan startup
+# ---------------------------------------------------------------------------
+_chain = None
+_coach_chain = None
+_coach_direct_chain = None       # accepts pre-fetched context (no retriever)
+_coach_vectorstore: Chroma | None = None
+_external_provider: ExternalLLMProvider | None = None
+_route_logger: RouteLogger = RouteLogger()
+_settings: Settings | None = None
 
-def _embed_label(settings) -> str:
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _embed_label(settings: Settings) -> str:
     if settings.embed_provider == "ollama":
         return settings.ollama_embed_model
     if settings.embed_provider == "huggingface":
@@ -50,7 +73,7 @@ def _embed_meta_path(persist_dir: str | Path) -> Path:
     return Path(persist_dir) / ".embed_model"
 
 
-def _needs_rebuild(settings, persist_path: Path, persist_dir: str | Path) -> bool:
+def _needs_rebuild(settings: Settings, persist_path: Path, persist_dir: str | Path) -> bool:
     if not persist_path.exists() or not any(persist_path.iterdir()):
         return True
     meta_path = _embed_meta_path(persist_dir)
@@ -61,7 +84,7 @@ def _needs_rebuild(settings, persist_path: Path, persist_dir: str | Path) -> boo
     return stored != current
 
 
-def _save_embed_meta(settings, persist_dir: str | Path) -> None:
+def _save_embed_meta(settings: Settings, persist_dir: str | Path) -> None:
     meta_path = _embed_meta_path(persist_dir)
     meta_path.write_text(
         f"{settings.embed_provider}:{_embed_label(settings)}",
@@ -69,11 +92,43 @@ def _save_embed_meta(settings, persist_dir: str | Path) -> None:
     )
 
 
-def build_prompt_coach_chain(retriever, llm: BaseChatModel):
-    """Build a TokenScope prompt-coach RAG chain."""
+def _resolve_internal_model_name(settings: Settings) -> str:
+    provider = settings.llm_provider
+    if provider == "ollama":
+        return settings.ollama_llm_model
+    if provider == "openai":
+        return settings.openai_llm_model
+    if provider == "cursor":
+        return settings.cursor_model
+    if provider == "huggingface":
+        return settings.hf_llm_model
+    return provider
 
-    prompt = PromptTemplate(
-        template="""당신은 AI 코딩 세션과 토큰 사용을 개선하는 한국어 프롬프트 코치입니다.
+
+def _source_from_docs(docs) -> list[str]:
+    """Extract relative source paths from retrieved document metadata."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for doc in docs:
+        raw = doc.metadata.get("source", "")
+        if not raw:
+            continue
+        # Make the path relative to the project root for cleaner display
+        try:
+            rel = str(Path(raw).relative_to(ROOT))
+        except ValueError:
+            rel = raw
+        if rel not in seen:
+            seen.add(rel)
+            result.append(rel)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Prompt-coach chain builders
+# ---------------------------------------------------------------------------
+
+_COACH_PROMPT_TEMPLATE = """당신은 AI 코딩 세션과 토큰 사용을 개선하는 한국어 프롬프트 코치입니다.
 아래 코칭 지식만 근거로 사용자의 질문 습관을 진단하고, 다음에 더 잘 물어볼 문장을 제안하세요.
 근거에 없는 내용을 과장하지 말고, 사용자의 목적은 보존하세요.
 반드시 한국어로만 답하세요. 영어 문장, 영어 제목, 영어 설명을 쓰지 마세요.
@@ -104,10 +159,15 @@ def build_prompt_coach_chain(retriever, llm: BaseChatModel):
 토큰 절약 포인트:
 - <왜 이 질문이 더 적은 탐색/반복을 만드는지>
 - 예상 절약: <TokenScope 예상 절약 토큰이 있으면 그 값을 사용하고, 없으면 보수적인 범위를 한국어로 제시>
-""",
+"""
+
+
+def build_prompt_coach_chain(retriever, llm: BaseChatModel):
+    """Build a TokenScope prompt-coach RAG chain (retriever-based)."""
+    prompt = PromptTemplate(
+        template=_COACH_PROMPT_TEMPLATE,
         input_variables=["context", "question"],
     )
-
     chain = (
         {
             "context": retriever | format_docs,
@@ -117,26 +177,41 @@ def build_prompt_coach_chain(retriever, llm: BaseChatModel):
         | llm
         | StrOutputParser()
     )
-
     return chain, retriever
 
 
-_chain = None
-_coach_chain = None
+def build_prompt_coach_direct_chain(llm: BaseChatModel):
+    """Build a prompt-coach chain that accepts pre-fetched context.
 
+    Input must be a dict: {"context": str, "question": str}.
+    This avoids a second vectorstore retrieval when the router has already
+    fetched the documents.
+    """
+    prompt = PromptTemplate(
+        template=_COACH_PROMPT_TEMPLATE,
+        input_variables=["context", "question"],
+    )
+    return prompt | llm | StrOutputParser()
+
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _chain
-    global _coach_chain
+    global _chain, _coach_chain, _coach_direct_chain
+    global _coach_vectorstore, _external_provider, _settings
 
     print("Initializing TokenScope RAG system...")
     settings = load_settings()
+    _settings = settings
 
     validate_ollama_models(settings)
     embeddings = create_embeddings(settings)
     llm = create_llm(settings)
 
+    # Generic wiki vectorstore
     persist_path = Path(settings.persist_dir)
     if _needs_rebuild(settings, persist_path, settings.persist_dir):
         print("Loading wiki documents and building vectorstore...")
@@ -163,6 +238,7 @@ async def lifespan(app: FastAPI):
         response_language=settings.response_language,
     )
 
+    # Prompt-coach vectorstore
     coach_persist_path = Path(PROMPT_COACH_PERSIST_DIR)
     if _needs_rebuild(settings, coach_persist_path, PROMPT_COACH_PERSIST_DIR):
         print("Loading TokenScope prompt coach wiki and building vectorstore...")
@@ -187,9 +263,23 @@ async def lifespan(app: FastAPI):
         retriever=coach_retriever,
         llm=llm,
     )
+    _coach_direct_chain = build_prompt_coach_direct_chain(llm)
+    _coach_vectorstore = coach_vectorstore
+
+    # External provider (optional — gracefully disabled if credentials missing)
+    _external_provider = create_external_provider(settings)
+    if _external_provider:
+        print(f"[HybridRouter] External provider ready: {_external_provider.model_name}")
+    else:
+        print("[HybridRouter] No external provider configured — external routes fall back to internal.")
+
     print("TokenScope RAG system ready.")
     yield
 
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 
 app = FastAPI(title="TokenScope RAG API", lifespan=lifespan)
 
@@ -200,6 +290,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ---------------------------------------------------------------------------
+# Request / Response models
+# ---------------------------------------------------------------------------
 
 class AskRequest(BaseModel):
     question: str
@@ -225,7 +319,15 @@ class CoachPromptRequest(BaseModel):
 
 class CoachPromptResponse(BaseModel):
     advice: str
+    route: str = "internal"        # "internal" | "external"
+    model: str = "ollama"          # model name that generated the answer
+    source: list[str] = []         # wiki files used (empty for external routes)
+    max_score: float = 0.0         # highest relevance score from vectorstore
 
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/")
 async def root():
@@ -262,12 +364,49 @@ async def ask_stream(req: AskRequest):
 async def coach_prompt(req: CoachPromptRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
-    if _coach_chain is None:
+    if _coach_direct_chain is None or _coach_vectorstore is None:
         raise HTTPException(status_code=503, detail="prompt coach not initialized")
 
-    answer = _coach_chain.invoke(_format_coach_input(req))
-    return CoachPromptResponse(advice=answer)
+    formatted = _format_coach_input(req)
+    router_result = router.route(_coach_vectorstore, formatted, k=5)
 
+    if router_result.route == "internal" or _external_provider is None:
+        context = format_docs(router_result.docs)
+        answer = _coach_direct_chain.invoke({"context": context, "question": formatted})
+        model_name = _resolve_internal_model_name(_settings)
+        source = _source_from_docs(router_result.docs)
+        effective_route = "internal"
+    else:
+        answer = _external_provider.generate(formatted)
+        model_name = _external_provider.model_name
+        source = []
+        effective_route = "external"
+
+    _route_logger.log(
+        route=effective_route,
+        model=model_name,
+        source=source,
+        score=router_result.max_score,
+    )
+
+    return CoachPromptResponse(
+        advice=answer,
+        route=effective_route,
+        model=model_name,
+        source=source,
+        max_score=round(router_result.max_score, 4),
+    )
+
+
+@app.get("/stats/routes")
+async def route_stats():
+    """Return routing statistics for the current process lifetime."""
+    return _route_logger.stats()
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
 
 def _format_coach_input(req: CoachPromptRequest) -> str:
     parts = [

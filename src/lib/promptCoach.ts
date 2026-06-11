@@ -30,6 +30,10 @@ export interface PromptCoachRequest {
 
 export interface PromptCoachResponse {
   advice: string;
+  route: "internal" | "external";
+  model: string;
+  source: string[];
+  max_score: number;
 }
 
 export interface DraftPromptAssessment {
