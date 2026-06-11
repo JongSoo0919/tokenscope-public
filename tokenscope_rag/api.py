@@ -1,30 +1,42 @@
 #!/usr/bin/env python3
-"""FastAPI server that exposes the RAG chain over HTTP."""
+"""TokenScope-owned RAG API wrapper.
 
+The generic RAG implementation lives in the `rag/` submodule. TokenScope-specific
+prompt coaching endpoints and knowledge live in this package so the submodule can
+track upstream without carrying product-specific code.
+"""
+
+import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+RAG_ROOT = ROOT / "rag"
+if str(RAG_ROOT) not in sys.path:
+    sys.path.insert(0, str(RAG_ROOT))
 
-from contextlib import asynccontextmanager
+os.chdir(RAG_ROOT)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 from pydantic import BaseModel
 
-from src.chain import build_prompt_coach_chain, build_rag_chain
+from src.chain import build_rag_chain, format_docs
 from src.config import load_settings
 from src.loader import load_and_chunk_wiki
 from src.providers import create_embeddings, create_llm
 from src.providers.ollama_health import validate_ollama_models
 from src.vectorstore import build_or_load_vectorstore, get_retriever
 
-# ──────────────────────────────────────────────
-# Helpers (reused from app.py)
-# ──────────────────────────────────────────────
+PROMPT_COACH_WIKI_DIR = ROOT / "tokenscope_rag" / "prompt-coach-wiki"
+PROMPT_COACH_PERSIST_DIR = ROOT / "tokenscope_rag" / ".chroma-prompt-coach"
+
 
 def _embed_label(settings) -> str:
     if settings.embed_provider == "ollama":
@@ -34,21 +46,14 @@ def _embed_label(settings) -> str:
     return "unknown"
 
 
-def _embed_meta_path(persist_dir: str) -> Path:
+def _embed_meta_path(persist_dir: str | Path) -> Path:
     return Path(persist_dir) / ".embed_model"
 
 
-def _needs_rebuild(
-    settings,
-    persist_path: Path,
-    rebuild: bool,
-    persist_dir: str | None = None,
-) -> bool:
-    if rebuild:
-        return True
+def _needs_rebuild(settings, persist_path: Path, persist_dir: str | Path) -> bool:
     if not persist_path.exists() or not any(persist_path.iterdir()):
         return True
-    meta_path = _embed_meta_path(persist_dir or settings.persist_dir)
+    meta_path = _embed_meta_path(persist_dir)
     if not meta_path.exists():
         return True
     current = f"{settings.embed_provider}:{_embed_label(settings)}"
@@ -56,17 +61,65 @@ def _needs_rebuild(
     return stored != current
 
 
-def _save_embed_meta(settings, persist_dir: str | None = None) -> None:
-    meta_path = _embed_meta_path(persist_dir or settings.persist_dir)
+def _save_embed_meta(settings, persist_dir: str | Path) -> None:
+    meta_path = _embed_meta_path(persist_dir)
     meta_path.write_text(
         f"{settings.embed_provider}:{_embed_label(settings)}",
         encoding="utf-8",
     )
 
 
-# ──────────────────────────────────────────────
-# App-level state
-# ──────────────────────────────────────────────
+def build_prompt_coach_chain(retriever, llm: BaseChatModel):
+    """Build a TokenScope prompt-coach RAG chain."""
+
+    prompt = PromptTemplate(
+        template="""당신은 AI 코딩 세션과 토큰 사용을 개선하는 한국어 프롬프트 코치입니다.
+아래 코칭 지식만 근거로 사용자의 질문 습관을 진단하고, 다음에 더 잘 물어볼 문장을 제안하세요.
+근거에 없는 내용을 과장하지 말고, 사용자의 목적은 보존하세요.
+반드시 한국어로만 답하세요. 영어 문장, 영어 제목, 영어 설명을 쓰지 마세요.
+코드 식별자나 파일명처럼 번역하면 안 되는 짧은 고유명사만 원문을 유지할 수 있습니다.
+
+코칭 지식:
+{context}
+
+분석할 입력:
+{question}
+
+반드시 아래 형식으로 답하세요.
+
+요약:
+<현재 질문 또는 세션 의도 한 문장>
+
+왜 모호한가:
+- <대상, 범위, 완료 조건, 제외 조건 중 부족한 점>
+- <이 모호함이 탐색/반복/도구 호출을 늘리는 이유>
+
+다음에는 이렇게 질문하세요:
+<사용자가 그대로 복사해 쓸 수 있는 개선 질문>
+
+개선된 점:
+- <개선 질문이 원래 질문보다 구체적인 점>
+- <작업 범위나 검증 기준이 더 명확해진 점>
+
+토큰 절약 포인트:
+- <왜 이 질문이 더 적은 탐색/반복을 만드는지>
+- 예상 절약: <TokenScope 예상 절약 토큰이 있으면 그 값을 사용하고, 없으면 보수적인 범위를 한국어로 제시>
+""",
+        input_variables=["context", "question"],
+    )
+
+    chain = (
+        {
+            "context": retriever | format_docs,
+            "question": RunnablePassthrough(),
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+    return chain, retriever
+
 
 _chain = None
 _coach_chain = None
@@ -74,11 +127,10 @@ _coach_chain = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the RAG chain once at startup."""
     global _chain
     global _coach_chain
 
-    print("Initializing RAG system...")
+    print("Initializing TokenScope RAG system...")
     settings = load_settings()
 
     validate_ollama_models(settings)
@@ -86,7 +138,7 @@ async def lifespan(app: FastAPI):
     llm = create_llm(settings)
 
     persist_path = Path(settings.persist_dir)
-    if _needs_rebuild(settings, persist_path, rebuild=False):
+    if _needs_rebuild(settings, persist_path, settings.persist_dir):
         print("Loading wiki documents and building vectorstore...")
         docs = load_and_chunk_wiki(settings.wiki_dir)
         vectorstore = build_or_load_vectorstore(
@@ -95,7 +147,7 @@ async def lifespan(app: FastAPI):
             persist_dir=settings.persist_dir,
             rebuild=True,
         )
-        _save_embed_meta(settings)
+        _save_embed_meta(settings, settings.persist_dir)
     else:
         print("Using cached vectorstore...")
         vectorstore = build_or_load_vectorstore(
@@ -111,28 +163,23 @@ async def lifespan(app: FastAPI):
         response_language=settings.response_language,
     )
 
-    coach_persist_path = Path(settings.prompt_coach_persist_dir)
-    if _needs_rebuild(
-        settings,
-        coach_persist_path,
-        rebuild=False,
-        persist_dir=settings.prompt_coach_persist_dir,
-    ):
-        print("Loading prompt coach wiki and building vectorstore...")
-        coach_docs = load_and_chunk_wiki(settings.prompt_coach_wiki_dir)
+    coach_persist_path = Path(PROMPT_COACH_PERSIST_DIR)
+    if _needs_rebuild(settings, coach_persist_path, PROMPT_COACH_PERSIST_DIR):
+        print("Loading TokenScope prompt coach wiki and building vectorstore...")
+        coach_docs = load_and_chunk_wiki(str(PROMPT_COACH_WIKI_DIR))
         coach_vectorstore = build_or_load_vectorstore(
             docs=coach_docs,
             embeddings=embeddings,
-            persist_dir=settings.prompt_coach_persist_dir,
+            persist_dir=str(PROMPT_COACH_PERSIST_DIR),
             rebuild=True,
         )
-        _save_embed_meta(settings, settings.prompt_coach_persist_dir)
+        _save_embed_meta(settings, PROMPT_COACH_PERSIST_DIR)
     else:
-        print("Using cached prompt coach vectorstore...")
+        print("Using cached TokenScope prompt coach vectorstore...")
         coach_vectorstore = build_or_load_vectorstore(
             docs=None,
             embeddings=embeddings,
-            persist_dir=settings.prompt_coach_persist_dir,
+            persist_dir=str(PROMPT_COACH_PERSIST_DIR),
         )
 
     coach_retriever = get_retriever(coach_vectorstore, k=5)
@@ -140,15 +187,11 @@ async def lifespan(app: FastAPI):
         retriever=coach_retriever,
         llm=llm,
     )
-    print("RAG system ready.")
+    print("TokenScope RAG system ready.")
     yield
 
 
-# ──────────────────────────────────────────────
-# FastAPI app
-# ──────────────────────────────────────────────
-
-app = FastAPI(title="Wiki RAG API", lifespan=lifespan)
+app = FastAPI(title="TokenScope RAG API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -157,9 +200,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ──────────────────────────────────────────────
-# Request / Response schemas
-# ──────────────────────────────────────────────
 
 class AskRequest(BaseModel):
     question: str
@@ -187,18 +227,13 @@ class CoachPromptResponse(BaseModel):
     advice: str
 
 
-# ──────────────────────────────────────────────
-# Endpoints
-# ──────────────────────────────────────────────
-
 @app.get("/")
 async def root():
-    return {"message": "Wiki RAG API is running. POST /ask to query."}
+    return {"message": "TokenScope RAG API is running. POST /ask or /coach-prompt to query."}
 
 
 @app.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest):
-    """Return a complete answer for the given question."""
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
     if _chain is None:
@@ -210,7 +245,6 @@ async def ask(req: AskRequest):
 
 @app.post("/ask/stream")
 async def ask_stream(req: AskRequest):
-    """Stream the answer token-by-token using Server-Sent Events."""
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
     if _chain is None:
@@ -218,7 +252,6 @@ async def ask_stream(req: AskRequest):
 
     def token_generator():
         for token in _chain.stream(req.question):
-            # SSE format: data: <payload>\n\n
             yield f"data: {token}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -227,7 +260,6 @@ async def ask_stream(req: AskRequest):
 
 @app.post("/coach-prompt", response_model=CoachPromptResponse)
 async def coach_prompt(req: CoachPromptRequest):
-    """Return a prompt-quality diagnosis and a better next question."""
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
     if _coach_chain is None:
