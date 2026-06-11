@@ -179,7 +179,9 @@ function parseJsonl(raw: string, sessionId: string, project: string, filePath: s
   let totalCacheReadTokens = 0;
   let totalCacheCreationTokens = 0;
   let model = "unknown";
-  let provider: Provider = filePath.includes("/.cursor/chats/") || project === "cursor"
+  let provider: Provider = filePath.includes("/.cursor/chats/")
+    || filePath.includes("/Library/Application Support/Cursor/")
+    || project === "cursor"
     ? "cursor"
     : filePath.includes("/.codex/") || project === "codex" ? "codex" : "claude";
   let startTime = "";

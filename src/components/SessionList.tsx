@@ -125,6 +125,7 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
 
 function inferProviderFromPath(path: string): string {
   if (path.includes("/.cursor/chats/")) return "cursor";
+  if (path.includes("/Library/Application Support/Cursor/")) return "cursor";
   if (path.includes("/.codex/")) return "codex";
   if (path.includes("/.gemini/") || path.includes("/.omc/")) return "gemini";
   return "claude";
