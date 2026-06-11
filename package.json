@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "./start.sh",
+    "start:web": "./start.sh --web",
     "start:ask": "./start.sh --ask",
     "start:cli": "./start.sh --cli",
     "dev": "vite",

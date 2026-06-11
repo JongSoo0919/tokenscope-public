@@ -8,6 +8,8 @@ track upstream without carrying product-specific code.
 
 import os
 import sys
+import json
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +38,7 @@ from src.providers import create_embeddings, create_llm
 from src.providers.ollama_health import validate_ollama_models
 from src.vectorstore import build_or_load_vectorstore, get_retriever
 from tokenscope_rag.session_log import log_wiki_exchange
+from tokenscope_rag.provider_qa_log import log_provider_qa, read_provider_qa_history
 
 from tokenscope_rag.external_provider import (
     ExternalLLMProvider,
@@ -46,6 +49,14 @@ import tokenscope_rag.router as router
 
 PROMPT_COACH_WIKI_DIR = ROOT / "tokenscope_rag" / "prompt-coach-wiki"
 PROMPT_COACH_PERSIST_DIR = ROOT / "tokenscope_rag" / ".chroma-prompt-coach"
+IGNORED_SESSION_FILES = {
+    "logs.json",
+    "projects.json",
+    "settings.json",
+    "state.json",
+    "hud-state.json",
+    "oauth_creds.json",
+}
 
 # ---------------------------------------------------------------------------
 # Globals set during lifespan startup
@@ -53,6 +64,7 @@ PROMPT_COACH_PERSIST_DIR = ROOT / "tokenscope_rag" / ".chroma-prompt-coach"
 _chain = None
 _coach_chain = None
 _coach_direct_chain = None       # accepts pre-fetched context (no retriever)
+_provider_qa_chain = None
 _coach_vectorstore: Chroma | None = None
 _external_provider: ExternalLLMProvider | None = None
 _route_logger: RouteLogger = RouteLogger()
@@ -196,13 +208,57 @@ def build_prompt_coach_direct_chain(llm: BaseChatModel):
     return prompt | llm | StrOutputParser()
 
 
+_PROVIDER_QA_PROMPT_TEMPLATE = """당신은 TokenScope의 세션 분석 도우미입니다.
+아래는 사용자가 선택한 provider 범위에서 수집한 최근 세션의 질문/답변/스코프 신호입니다.
+반드시 한국어로만 답하고, 제공된 근거 밖의 사실은 단정하지 마세요.
+질문에 답하면서 다음을 함께 요약하세요.
+- 반복되는 작업 주제
+- 스코프가 넓어지거나 섞이는 패턴
+- 자주 등장하는 파일/기능/키워드
+- 답변이 불확실한 경우 그 이유
+
+provider 범위:
+{provider}
+
+스코프 요약:
+{scope_summary}
+
+세션 근거:
+{context}
+
+사용자 질문:
+{question}
+
+아래 형식으로만 답하세요.
+
+답변:
+<질문에 대한 핵심 답변>
+
+스코프:
+- <반복되는 주제 또는 범위 신호>
+- <혼선 또는 과도한 확장 신호>
+- <주의할 점>
+
+참고:
+- <필요한 경우 근거가 된 세션 특징>
+"""
+
+
+def build_provider_qa_chain(llm: BaseChatModel):
+    prompt = PromptTemplate(
+        template=_PROVIDER_QA_PROMPT_TEMPLATE,
+        input_variables=["provider", "scope_summary", "context", "question"],
+    )
+    return prompt | llm | StrOutputParser()
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _chain, _coach_chain, _coach_direct_chain
+    global _chain, _coach_chain, _coach_direct_chain, _provider_qa_chain
     global _coach_vectorstore, _external_provider, _settings
 
     print("Initializing TokenScope RAG system...")
@@ -266,6 +322,7 @@ async def lifespan(app: FastAPI):
         llm=llm,
     )
     _coach_direct_chain = build_prompt_coach_direct_chain(llm)
+    _provider_qa_chain = build_provider_qa_chain(llm)
     _coach_vectorstore = coach_vectorstore
 
     # External provider (optional — gracefully disabled if credentials missing)
@@ -305,6 +362,23 @@ class AskResponse(BaseModel):
     answer: str
 
 
+class SessionFileResponse(BaseModel):
+    session_id: str
+    project: str
+    path: str
+    size_bytes: int
+    modified: int
+
+
+class ReadSessionRequest(BaseModel):
+    path: str
+
+
+class ReadSessionResponse(BaseModel):
+    content: str
+    path: str
+
+
 class CoachPromptRequest(BaseModel):
     question: str
     session_summary: str | None = None
@@ -327,6 +401,29 @@ class CoachPromptResponse(BaseModel):
     max_score: float = 0.0         # highest relevance score from vectorstore
 
 
+class ProviderQaRequest(BaseModel):
+    provider: str = "all"
+    question: str
+
+
+class ProviderQaResponse(BaseModel):
+    answer: str
+    provider: str
+    sessions_used: int
+    sources: list[str] = []
+    scope_summary: str = ""
+
+
+class ProviderQaHistoryItem(BaseModel):
+    timestamp: str
+    provider: str
+    question: str
+    answer: str
+    sessions_used: int
+    sources: list[str] = []
+    scope_summary: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -334,6 +431,37 @@ class CoachPromptResponse(BaseModel):
 @app.get("/")
 async def root():
     return {"message": "TokenScope RAG API is running. POST /ask or /coach-prompt to query."}
+
+
+@app.get("/tokenscope/sessions", response_model=list[SessionFileResponse])
+async def list_tokenscope_sessions():
+    sessions = _list_local_sessions()
+    sessions.sort(key=lambda session: session.modified, reverse=True)
+
+    seen = set()
+    unique = []
+    for session in sessions:
+        if session.path in seen:
+            continue
+        seen.add(session.path)
+        unique.append(session)
+    return unique
+
+
+@app.post("/tokenscope/read-session", response_model=ReadSessionResponse)
+async def read_tokenscope_session(req: ReadSessionRequest):
+    path = Path(req.path).resolve()
+    if not _is_allowed_session_path(path):
+        raise HTTPException(status_code=404, detail="session not found")
+
+    if _is_cursor_chat_store(path):
+        content = _read_cursor_store_as_jsonl(path)
+    elif _is_cursor_state_db(path):
+        content = _read_cursor_state_as_jsonl(path)
+    else:
+        content = path.read_text(encoding="utf-8")
+
+    return ReadSessionResponse(content=content, path=str(path))
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -418,6 +546,64 @@ async def coach_prompt(req: CoachPromptRequest):
     )
 
 
+@app.post("/tokenscope/provider-qa", response_model=ProviderQaResponse)
+async def provider_qa(req: ProviderQaRequest):
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question must not be empty")
+    if _provider_qa_chain is None:
+        raise HTTPException(status_code=503, detail="provider qa not initialized")
+
+    provider = (req.provider or "all").strip().lower()
+    sessions = _collect_provider_qa_sessions(provider)
+    if not sessions:
+        raise HTTPException(status_code=404, detail=f"no sessions found for provider: {provider}")
+
+    scope_summary, context, sources = _build_provider_qa_context(sessions)
+    answer = _provider_qa_chain.invoke(
+        {
+            "provider": _provider_scope_label(provider),
+            "scope_summary": scope_summary,
+            "context": context,
+            "question": question,
+        }
+    )
+
+    log_provider_qa(
+        provider=provider,
+        question=question,
+        answer=answer,
+        sessions_used=len(sources),
+        sources=sources,
+        scope_summary=scope_summary,
+    )
+
+    return ProviderQaResponse(
+        answer=answer,
+        provider=provider,
+        sessions_used=len(sources),
+        sources=sources,
+        scope_summary=scope_summary,
+    )
+
+
+@app.get("/tokenscope/provider-qa/history", response_model=list[ProviderQaHistoryItem])
+async def provider_qa_history(provider: str = "all", limit: int = 20):
+    items = read_provider_qa_history(provider=provider, limit=max(1, min(limit, 100)))
+    return [
+        ProviderQaHistoryItem(
+            timestamp=item.get("timestamp", ""),
+            provider=item.get("provider", "all"),
+            question=item.get("question", ""),
+            answer=item.get("answer", ""),
+            sessions_used=int(item.get("sessions_used") or 0),
+            sources=list(item.get("sources") or []),
+            scope_summary=item.get("scope_summary", ""),
+        )
+        for item in items
+    ]
+
+
 @app.get("/stats/routes")
 async def route_stats():
     """Return routing statistics for the current process lifetime."""
@@ -461,6 +647,679 @@ def _format_coach_input(req: CoachPromptRequest) -> str:
             parts.append(f"최근 사용자 질문:\n{messages}")
 
     return "\n\n---\n\n".join(parts)
+
+
+def _collect_provider_qa_sessions(provider: str) -> list[SessionFileResponse]:
+    sessions = _list_local_sessions()
+    filtered = [session for session in sessions if provider == "all" or _session_provider(session) == provider]
+    filtered.sort(key=lambda session: session.modified, reverse=True)
+    return filtered[:8]
+
+
+def _build_provider_qa_context(sessions: list[SessionFileResponse]) -> tuple[str, str, list[str]]:
+    scope_counts: dict[str, int] = {}
+    sections: list[str] = []
+    used_sources: list[str] = []
+
+    for index, session in enumerate(sessions, start=1):
+        try:
+            content = _read_provider_session_content(Path(session.path))
+        except (OSError, HTTPException, sqlite3.Error):
+            continue
+
+        messages = _extract_provider_messages(content)
+        if not messages:
+            continue
+
+        visible = messages[-6:]
+        rendered: list[str] = []
+        for role, text in visible:
+            if not text.strip():
+                continue
+            truncated = _truncate_text(text.strip(), 240)
+            rendered.append(f"- {role}: {truncated}")
+            for signal in _extract_scope_signals(text):
+                scope_counts[signal] = scope_counts.get(signal, 0) + 1
+
+        if not rendered:
+            continue
+
+        used_sources.append(_session_source_label(Path(session.path)))
+        sections.append(
+            "\n".join(
+                [
+                    f"[세션 {index}] { _session_source_label(Path(session.path)) }",
+                    f"프로젝트: {session.project} / 수정 시각: {datetime.fromtimestamp(session.modified, tz=timezone.utc).isoformat()}",
+                    *rendered,
+                ]
+            )
+        )
+
+    if scope_counts:
+        ordered = sorted(scope_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
+        scope_summary = "반복 신호: " + ", ".join(f"{name}({count})" for name, count in ordered)
+    else:
+        scope_summary = "명확한 스코프 신호는 적고, 일반 질의나 짧은 교정성 질문이 주로 보입니다."
+
+    context = "\n\n---\n\n".join(sections) if sections else "선택한 provider에서 유효한 세션 메시지를 찾지 못했습니다."
+    return scope_summary, context, used_sources
+
+
+def _read_provider_session_content(path: Path) -> str:
+    if _is_cursor_chat_store(path):
+        return _read_cursor_store_as_jsonl(path)
+    if _is_cursor_state_db(path):
+        return _read_cursor_state_as_jsonl(path)
+    return path.read_text(encoding="utf-8")
+
+
+def _extract_provider_messages(raw: str) -> list[tuple[str, str]]:
+    raw = raw.strip()
+    if not raw:
+        return []
+
+    if raw.startswith("{") and raw.endswith("}") and "\n{" not in raw:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            value = None
+        if isinstance(value, dict) and isinstance(value.get("messages"), list):
+            messages: list[tuple[str, str]] = []
+            for item in value["messages"]:
+                _extract_provider_message_from_entry(item, messages)
+            if messages:
+                return messages
+
+    messages: list[tuple[str, str]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        _extract_provider_message_from_entry(entry, messages)
+    return messages
+
+
+def _extract_provider_message_from_entry(entry, messages: list[tuple[str, str]]) -> None:
+    if not isinstance(entry, dict):
+        return
+
+    entry_type = entry.get("type")
+    if entry_type in {"session_meta", "cursor_meta", "wiki_meta", "file-history-snapshot", "info", "event_msg", "turn_context"}:
+        return
+
+    if entry_type == "response_item" and isinstance(entry.get("payload"), dict):
+        payload = entry["payload"]
+        if payload.get("type") != "message":
+            return
+        role = payload.get("role")
+        if role not in {"user", "assistant"}:
+            return
+        text = _join_content_items(payload.get("content"))
+        _append_visible_message(messages, role, text)
+        return
+
+    if entry_type == "cursor_message" and isinstance(entry.get("payload"), dict):
+        payload = entry["payload"]
+        role = payload.get("role")
+        if role not in {"user", "assistant"}:
+            return
+        text = payload.get("content")
+        if isinstance(text, list):
+            text = "\n".join(
+                str(block.get("text") or block.get("content") or block.get("result") or block.get("args") or "")
+                for block in text
+                if isinstance(block, dict)
+            )
+        _append_visible_message(messages, role, str(text or ""))
+        return
+
+    if isinstance(entry.get("message"), dict):
+        message = entry["message"]
+        role = message.get("role") or entry.get("role")
+        if role not in {"user", "assistant"}:
+            return
+        text = _join_content_items(message.get("content"))
+        _append_visible_message(messages, role, text)
+        return
+
+    role = entry.get("role")
+    if entry_type in {"user", "assistant"} or role in {"user", "assistant"}:
+        normalized_role = "assistant" if entry_type == "assistant" or role == "assistant" else "user"
+        text = entry.get("content")
+        if isinstance(text, list):
+            text = _join_content_items(text)
+        _append_visible_message(messages, normalized_role, str(text or ""))
+
+
+def _append_visible_message(messages: list[tuple[str, str]], role: str, text: str) -> None:
+    normalized = _normalize_visible_text(text)
+    if normalized:
+        messages.append((role, normalized))
+
+
+def _normalize_visible_text(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    hidden_prefixes = (
+        "<user_info>",
+        "<git_status>",
+        "<agent_transcripts>",
+        "<rules>",
+        "<agent_skills>",
+        "<user_shell_command>",
+        "<environment_context>",
+        "<permissions instructions>",
+        "<skills_instructions>",
+        "Continue working toward the active thread goal.",
+    )
+    if value.startswith(hidden_prefixes):
+        return ""
+    return value
+
+
+def _join_content_items(content) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text") or item.get("content") or item.get("result") or ""
+        if text:
+            parts.append(str(text))
+    return "\n".join(parts)
+
+
+def _extract_scope_signals(text: str) -> list[str]:
+    normalized = text.lower()
+    signals = []
+    rules = [
+        ("범위", ("scope", "범위", "하지 마", "수정하지 마", "do not", "don't", "exclud")),
+        ("파일", ("file", "files", "파일", "경로", "path")),
+        ("테스트", ("test", "tests", "테스트", "검증", "verify")),
+        ("에러", ("error", "failed", "failure", "오류", "실패")),
+        ("API", ("api", "endpoint", "route", "서버", "backend")),
+        ("기능", ("feature", "기능", "동작", "behavior")),
+    ]
+    for label, needles in rules:
+        if any(needle in normalized for needle in needles):
+            signals.append(label)
+    return signals
+
+
+def _truncate_text(text: str, max_length: int) -> str:
+    value = text.strip()
+    if len(value) <= max_length:
+        return value
+    return value[: max_length - 1].rstrip() + "…"
+
+
+def _session_provider(session: SessionFileResponse) -> str:
+    path = session.path
+    if "/tokenscope_rag/sessions/" in path:
+        return "wiki"
+    if "/.cursor/chats/" in path or "/.cursor/projects/" in path or "/Library/Application Support/Cursor/" in path:
+        return "cursor"
+    if "/.codex/" in path:
+        return "codex"
+    if "/.gemini/" in path or "/.omc/" in path:
+        return "gemini"
+    return "claude"
+
+
+def _provider_scope_label(provider: str) -> str:
+    if provider == "all":
+        return "전체 provider"
+    if provider == "wiki":
+        return "WIKI"
+    return provider.capitalize()
+
+
+def _session_source_label(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        try:
+            return str(path.relative_to(Path.home()))
+        except ValueError:
+            return str(path)
+
+
+def _list_local_sessions() -> list[SessionFileResponse]:
+    home = Path.home()
+    sessions: list[SessionFileResponse] = []
+
+    _scan_json_sessions(home / ".claude" / "projects", "claude", sessions, recursive=True)
+    _scan_gemini_tmp(home / ".gemini" / "tmp", sessions)
+    _scan_json_sessions(home / ".omc" / "state" / "sessions", "omc-global", sessions, recursive=True)
+    _scan_json_sessions(home / ".codex" / "sessions", "codex", sessions, recursive=True)
+    _scan_cursor_chat_stores(home / ".cursor" / "chats", sessions)
+    _scan_cursor_workspace_stores(
+        home / "Library" / "Application Support" / "Cursor" / "User" / "workspaceStorage",
+        sessions,
+    )
+    _scan_cursor_agent_transcripts(home / ".cursor" / "projects", sessions)
+    _scan_json_sessions(ROOT / "tokenscope_rag" / "sessions", "WIKI", sessions, recursive=True)
+
+    return sessions
+
+
+def _scan_gemini_tmp(path: Path, sessions: list[SessionFileResponse]) -> None:
+    if not path.exists():
+        return
+    for child in _safe_iterdir(path):
+        if child.is_dir():
+            _scan_json_sessions(child, child.name, sessions, recursive=True)
+
+
+def _scan_json_sessions(
+    path: Path,
+    project_name: str,
+    sessions: list[SessionFileResponse],
+    *,
+    recursive: bool,
+) -> None:
+    if not path.exists():
+        return
+    for child in _safe_iterdir(path):
+        if child.is_dir() and recursive:
+            _scan_json_sessions(child, project_name, sessions, recursive=True)
+            continue
+        if not child.is_file() or child.suffix not in {".jsonl", ".json"}:
+            continue
+        if child.name in IGNORED_SESSION_FILES:
+            continue
+        if project_name == "codex" and not _codex_has_visible_user_turn(child):
+            continue
+
+        session = _session_from_file(child, project_name)
+        if session:
+            sessions.append(session)
+
+
+def _session_from_file(path: Path, project_name: str) -> SessionFileResponse | None:
+    try:
+        stats = path.stat()
+    except OSError:
+        return None
+    if stats.st_size < 50:
+        return None
+
+    session_id = path.stem
+    if "dogfood-bad" in session_id:
+        project = "dogfood-bad"
+    elif "dogfood-good" in session_id:
+        project = "dogfood-good"
+    elif "dogfood" in session_id:
+        project = "tokenscope-dogfood"
+    elif project_name == "codex":
+        project = _infer_codex_project(path) or project_name
+    else:
+        project = project_name
+
+    return SessionFileResponse(
+        session_id=session_id,
+        project=project,
+        path=str(path),
+        size_bytes=stats.st_size,
+        modified=int(stats.st_mtime),
+    )
+
+
+def _scan_cursor_chat_stores(path: Path, sessions: list[SessionFileResponse]) -> None:
+    if not path.exists():
+        return
+    for child in _safe_iterdir(path):
+        if child.is_dir():
+            _scan_cursor_chat_stores(child, sessions)
+        elif child.name == "store.db" and _cursor_store_has_readable_blobs(child):
+            session = _cursor_store_session(child)
+            if session:
+                sessions.append(session)
+
+
+def _cursor_store_session(path: Path) -> SessionFileResponse | None:
+    try:
+        stats = path.stat()
+    except OSError:
+        return None
+    if stats.st_size < 50:
+        return None
+
+    agent_id = path.parent.name if path.parent else "cursor"
+    workspace_id = path.parent.parent.name if path.parent and path.parent.parent else "cursor"
+    return SessionFileResponse(
+        session_id=agent_id,
+        project=_cursor_project_name(workspace_id),
+        path=str(path),
+        size_bytes=stats.st_size,
+        modified=int(stats.st_mtime),
+    )
+
+
+def _scan_cursor_workspace_stores(path: Path, sessions: list[SessionFileResponse]) -> None:
+    if not path.exists():
+        return
+    for child in _safe_iterdir(path):
+        state_db = child / "state.vscdb"
+        if child.is_dir() and state_db.exists() and _cursor_state_has_messages(state_db):
+            try:
+                stats = state_db.stat()
+            except OSError:
+                continue
+            sessions.append(
+                SessionFileResponse(
+                    session_id=child.name,
+                    project=_cursor_workspace_project_name(state_db) or "cursor",
+                    path=str(state_db),
+                    size_bytes=stats.st_size,
+                    modified=int(stats.st_mtime),
+                )
+            )
+
+
+def _scan_cursor_agent_transcripts(path: Path, sessions: list[SessionFileResponse]) -> None:
+    if not path.exists():
+        return
+    for project_dir in _safe_iterdir(path):
+        transcript_root = project_dir / "agent-transcripts"
+        if not project_dir.is_dir() or not transcript_root.exists():
+            continue
+        for transcript_dir in _safe_iterdir(transcript_root):
+            transcript_file = transcript_dir / f"{transcript_dir.name}.jsonl"
+            if transcript_dir.is_dir() and transcript_file.exists():
+                session = _session_from_file(
+                    transcript_file,
+                    _cursor_agent_project_name(project_dir.name),
+                )
+                if session:
+                    sessions.append(session)
+
+
+def _safe_iterdir(path: Path):
+    try:
+        return list(path.iterdir())
+    except OSError:
+        return []
+
+
+def _is_allowed_session_path(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+
+    home = Path.home().resolve()
+    allowed_roots = [
+        home / ".claude" / "projects",
+        home / ".gemini" / "tmp",
+        home / ".omc" / "state" / "sessions",
+        home / ".codex" / "sessions",
+        home / ".cursor" / "chats",
+        home / ".cursor" / "projects",
+        home / "Library" / "Application Support" / "Cursor" / "User" / "workspaceStorage",
+        ROOT / "tokenscope_rag" / "sessions",
+    ]
+    resolved_roots = [root.resolve() for root in allowed_roots if root.exists()]
+    return any(root == path or root in path.parents for root in resolved_roots)
+
+
+def _is_cursor_chat_store(path: Path) -> bool:
+    return path.name == "store.db" and "/.cursor/chats/" in str(path)
+
+
+def _is_cursor_state_db(path: Path) -> bool:
+    return path.name == "state.vscdb" and "/Library/Application Support/Cursor/User/workspaceStorage/" in str(path)
+
+
+def _read_cursor_store_as_jsonl(path: Path) -> str:
+    lines = []
+    meta = _read_cursor_meta(path)
+    if meta is not None:
+        lines.append(json.dumps({"type": "cursor_meta", "payload": meta}, ensure_ascii=False))
+
+    with _sqlite_connect(path) as conn:
+        for row_id, data in conn.execute("select id, data from blobs"):
+            text = _blob_to_text(data)
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if not payload.get("role"):
+                continue
+            lines.append(
+                json.dumps(
+                    {"type": "cursor_message", "id": row_id, "payload": payload},
+                    ensure_ascii=False,
+                )
+            )
+
+    if len(lines) <= 1:
+        raise HTTPException(status_code=422, detail="Cursor store did not contain readable message blobs")
+    return "\n".join(lines)
+
+
+def _read_cursor_state_as_jsonl(path: Path) -> str:
+    lines = [
+        json.dumps(
+            {
+                "type": "cursor_meta",
+                "payload": {
+                    "model": "cursor",
+                    "workspace": _cursor_workspace_project_name(path) or "cursor",
+                },
+            },
+            ensure_ascii=False,
+        )
+    ]
+
+    prompts = _read_cursor_state_json_value(path, "aiService.prompts")
+    if isinstance(prompts, list):
+        for idx, item in enumerate(prompts):
+            text = str(item.get("text", "")).strip() if isinstance(item, dict) else ""
+            if text:
+                lines.append(_cursor_message_line(f"prompt-{idx}", "user", text))
+
+    generations = _read_cursor_state_json_value(path, "aiService.generations")
+    if isinstance(generations, list):
+        for idx, item in enumerate(generations):
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("textDescription", "")).strip()
+            if text:
+                lines.append(
+                    _cursor_message_line(
+                        str(item.get("generationUUID") or f"generation-{idx}"),
+                        "user",
+                        text,
+                        item.get("unixMs"),
+                    )
+                )
+
+    if len(lines) <= 1:
+        raise HTTPException(status_code=422, detail="Cursor workspace state did not contain readable prompt history")
+    return "\n".join(lines)
+
+
+def _cursor_message_line(message_id: str, role: str, content: str, created_at=None) -> str:
+    payload = {
+        "id": message_id,
+        "role": role,
+        "content": content,
+        "model": "cursor",
+    }
+    if created_at is not None:
+        payload["createdAt"] = created_at
+    return json.dumps({"type": "cursor_message", "id": message_id, "payload": payload}, ensure_ascii=False)
+
+
+def _read_cursor_meta(path: Path):
+    try:
+        with _sqlite_connect(path) as conn:
+            row = conn.execute("select value from meta where key = '0' limit 1").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    text = _blob_to_text(row[0])
+    if not text:
+        return None
+    if all(char in "0123456789abcdefABCDEF" for char in text):
+        try:
+            text = bytes.fromhex(text).decode("utf-8")
+        except ValueError:
+            pass
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _read_cursor_state_json_value(path: Path, key: str):
+    try:
+        with _sqlite_connect(path) as conn:
+            row = conn.execute("select value from ItemTable where key = ? limit 1", (key,)).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    text = _blob_to_text(row[0])
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _sqlite_connect(path: Path):
+    return sqlite3.connect(f"file:{path}?immutable=1", uri=True)
+
+
+def _blob_to_text(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _cursor_store_has_readable_blobs(path: Path) -> bool:
+    try:
+        with _sqlite_connect(path) as conn:
+            conn.execute("select 1 from blobs limit 1").fetchone()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def _cursor_state_has_messages(path: Path) -> bool:
+    try:
+        with _sqlite_connect(path) as conn:
+            row = conn.execute(
+                "select count(*) from ItemTable where key in ('aiService.prompts', 'aiService.generations') and length(value) > 2"
+            ).fetchone()
+        return bool(row and row[0] > 0)
+    except sqlite3.Error:
+        return False
+
+
+def _cursor_project_name(workspace_id: str) -> str:
+    workspace_json = Path.home() / ".cursor" / "chats" / workspace_id / "workspace.json"
+    if not workspace_json.exists():
+        return "cursor"
+    try:
+        value = json.loads(workspace_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "cursor"
+    workspace = value.get("workspace")
+    folder = (
+        value.get("folder")
+        or (workspace.get("folder") if isinstance(workspace, dict) else workspace)
+        or value.get("uri")
+    )
+    return _project_name_from_uri(folder) or "cursor"
+
+
+def _cursor_workspace_project_name(path: Path) -> str | None:
+    workspace_json = path.parent / "workspace.json"
+    if not workspace_json.exists():
+        return None
+    try:
+        value = json.loads(workspace_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    workspace = value.get("workspace")
+    folder = (
+        value.get("folder")
+        or (workspace.get("folder") if isinstance(workspace, dict) else workspace)
+        or value.get("uri")
+    )
+    return _project_name_from_uri(folder)
+
+
+def _cursor_agent_project_name(project_id: str) -> str:
+    if project_id == "empty-window":
+        return "cursor-empty-window"
+    if project_id.startswith("Users-"):
+        return project_id.rsplit("-", 1)[-1] or project_id
+    return project_id
+
+
+def _project_name_from_uri(value) -> str | None:
+    if not value:
+        return None
+    text = str(value)
+    if text.startswith("file://"):
+        text = text.removeprefix("file://")
+    return Path(text).name or None
+
+
+def _infer_codex_project(path: Path) -> str | None:
+    try:
+        first = path.read_text(encoding="utf-8").splitlines()[0]
+        value = json.loads(first)
+    except (OSError, IndexError, json.JSONDecodeError):
+        return None
+    cwd = value.get("payload", {}).get("cwd")
+    return Path(cwd).name if cwd else None
+
+
+def _codex_has_visible_user_turn(path: Path) -> bool:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = value.get("payload", {})
+        if value.get("type") != "response_item" or payload.get("type") != "message" or payload.get("role") != "user":
+            continue
+        content = payload.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            text = str(item.get("text", "")).strip() if isinstance(item, dict) else ""
+            if text and not text.startswith((
+                "<user_shell_command>",
+                "<environment_context>",
+                "<permissions instructions>",
+                "<skills_instructions>",
+                "Continue working toward the active thread goal.",
+            )):
+                return True
+    return False
 
 
 def settings_model_label() -> str:

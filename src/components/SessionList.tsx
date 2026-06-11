@@ -3,11 +3,14 @@ import { SessionFile } from "../lib/types";
 import { DiagnosticResult } from "../lib/analyzer";
 
 type SortMode = "latest" | "score";
+export type ProviderFilter = "all" | "claude" | "gemini" | "codex" | "cursor" | "wiki";
 
 interface Props {
   sessions: SessionFile[];
   selectedPath: string | null;
   onSelect: (session: SessionFile) => void;
+  providerFilter: ProviderFilter;
+  onProviderFilterChange: (provider: ProviderFilter) => void;
   loading: boolean;
   error: string | null;
   diagnostics?: Map<string, DiagnosticResult>;
@@ -37,7 +40,7 @@ function providerStyle(provider: string) {
   }
 }
 
-export function SessionList({ sessions, selectedPath, onSelect, loading, error, diagnostics }: Props) {
+export function SessionList({ sessions, selectedPath, onSelect, providerFilter, onProviderFilterChange, loading, error, diagnostics }: Props) {
   const [sortMode, setSortMode] = useState<SortMode>("latest");
 
   if (loading) return <div className="empty"><span className="spinner" /></div>;
@@ -56,7 +59,13 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
     );
   }
 
-  const sorted = [...sessions].sort((a, b) => {
+  const providerCounts = buildProviderCounts(sessions, diagnostics);
+  const filtered = sessions.filter(session => {
+    if (providerFilter === "all") return true;
+    return getSessionProvider(session, diagnostics) === providerFilter;
+  });
+
+  const sorted = [...filtered].sort((a, b) => {
     if (sortMode === "score") {
       const sa = diagnostics?.get(a.path)?.healthScore;
       const sb = diagnostics?.get(b.path)?.healthScore;
@@ -86,7 +95,7 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
       )}
 
       {/* 정렬 토글 */}
-      <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", gap: 6, padding: "8px 10px 6px", borderBottom: "1px solid var(--border)" }}>
         <button
           className={`btn ${sortMode === "latest" ? "primary" : "ghost"}`}
           style={{ flex: 1, fontSize: 11, padding: "4px 6px" }}
@@ -99,9 +108,29 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
         >점수순</button>
       </div>
 
+      <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
+        {providerOptions(providerCounts).map(option => (
+          <button
+            key={option.value}
+            className={`btn ${providerFilter === option.value ? "primary" : "ghost"}`}
+            style={{ fontSize: 10, padding: "4px 7px", borderRadius: 5 }}
+            onClick={() => onProviderFilterChange(option.value)}
+            title={`${option.label} ${option.count}개`}
+          >
+            {option.label} {option.count}
+          </button>
+        ))}
+      </div>
+
+      {sorted.length === 0 && (
+        <div className="empty" style={{ padding: 16 }}>
+          선택한 provider의 세션이 없습니다.
+        </div>
+      )}
+
       {sorted.map(s => {
         const diag = diagnostics?.get(s.path);
-        const provider = diag?.session.provider ?? inferProviderFromPath(s.path);
+        const provider = getSessionProvider(s, diagnostics);
         const pStyle = providerStyle(provider);
 
         return (
@@ -141,6 +170,40 @@ export function SessionList({ sessions, selectedPath, onSelect, loading, error, 
       })}
     </div>
   );
+}
+
+function getSessionProvider(session: SessionFile, diagnostics?: Map<string, DiagnosticResult>): string {
+  return diagnostics?.get(session.path)?.session.provider ?? inferProviderFromPath(session.path);
+}
+
+function buildProviderCounts(sessions: SessionFile[], diagnostics?: Map<string, DiagnosticResult>): Record<ProviderFilter, number> {
+  const counts: Record<ProviderFilter, number> = {
+    all: sessions.length,
+    claude: 0,
+    gemini: 0,
+    codex: 0,
+    cursor: 0,
+    wiki: 0,
+  };
+  for (const session of sessions) {
+    const provider = getSessionProvider(session, diagnostics);
+    if (provider in counts && provider !== "all") {
+      counts[provider as ProviderFilter] += 1;
+    }
+  }
+  return counts;
+}
+
+function providerOptions(counts: Record<ProviderFilter, number>): Array<{ value: ProviderFilter; label: string; count: number }> {
+  const options: Array<{ value: ProviderFilter; label: string; count: number }> = [
+    { value: "all", label: "전체", count: counts.all },
+    { value: "claude", label: "Claude", count: counts.claude },
+    { value: "codex", label: "Codex", count: counts.codex },
+    { value: "cursor", label: "Cursor", count: counts.cursor },
+    { value: "wiki", label: "WIKI", count: counts.wiki },
+    { value: "gemini", label: "Gemini", count: counts.gemini },
+  ];
+  return options.filter(option => option.value === "all" || option.count > 0);
 }
 
 function inferProviderFromPath(path: string): string {

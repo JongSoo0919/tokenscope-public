@@ -1,16 +1,19 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { appInvoke } from "./lib/appInvoke";
 import { SessionList } from "./components/SessionList";
+import { ProviderQuestionPanel } from "./components/ProviderQuestionPanel";
 import { SummaryCard } from "./components/SummaryCard";
 import { FixPreview } from "./components/FixPreview";
 import { QuestionGuide } from "./components/QuestionGuide";
 import { Dashboard } from "./components/Dashboard";
 import { ConversationReview } from "./components/ConversationReview";
 import { PromptCoachPanel } from "./components/PromptCoachPanel";
+import { ScopeReview } from "./components/ScopeReview";
 import { parseSession, isHumanVisibleMessage } from "./lib/parser";
 import { analyzeSession, DiagnosticResult } from "./lib/analyzer";
 import { prescribe, Fix, UsageWindowContext } from "./lib/prescriber";
 import { SessionFile, ReadResult } from "./lib/types";
+import type { ProviderFilter } from "./components/SessionList";
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionFile[]>([]);
@@ -20,12 +23,14 @@ export default function App() {
   const [selected, setSelected] = useState<SessionFile | null>(null);
   const [diagnostic, setDiagnostic] = useState<DiagnosticResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<Map<string, DiagnosticResult>>(new Map());
+  const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all");
   const [fixes, setFixes] = useState<Fix[]>([]);
   const [claudeMd, setClaudeMd] = useState("");
   const [geminiMd, setGeminiMd] = useState("");
   const [codexMd, setCodexMd] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState("summary");
+  const [mainView, setMainView] = useState<"scope" | "qa">("scope");
 
   const [applying, setApplying] = useState(false);
   const [applyMsg, setApplyMsg] = useState<string | null>(null);
@@ -36,10 +41,10 @@ export default function App() {
   useEffect(() => {
     const init = async () => {
       try {
-        const sessionList = await invoke<SessionFile[]>("list_sessions");
-        const cMd = await invoke<string>("read_claude_md").catch(() => "");
-        const gMd = await invoke<string>("read_gemini_md").catch(() => "");
-        const xMd = await invoke<string>("read_codex_md").catch(() => "");
+        const sessionList = await appInvoke<SessionFile[]>("list_sessions");
+        const cMd = await appInvoke<string>("read_claude_md").catch(() => "");
+        const gMd = await appInvoke<string>("read_gemini_md").catch(() => "");
+        const xMd = await appInvoke<string>("read_codex_md").catch(() => "");
         setClaudeMd(cMd);
         setGeminiMd(gMd);
         setCodexMd(xMd);
@@ -50,7 +55,7 @@ export default function App() {
           
           for (const s of sessionList) {
             try {
-              const res = await invoke<ReadResult>("read_session", { path: s.path });
+              const res = await appInvoke<ReadResult>("read_session", { path: s.path });
               const parsed = parseSession(res.content, s.session_id, s.project, s.path);
               const configMd = getSessionConfigMd(parsed, cMd, gMd, xMd);
               const diag = analyzeSession(parsed, configMd);
@@ -72,6 +77,7 @@ export default function App() {
   }, []);
 
   const handleSelect = useCallback(async (session: SessionFile) => {
+    setMainView("scope");
     setSelected(session);
     setDiagnostic(null);
     setFixes([]);
@@ -81,7 +87,7 @@ export default function App() {
     setAnalyzing(true);
 
     try {
-      const result = await invoke<ReadResult>("read_session", { path: session.path });
+      const result = await appInvoke<ReadResult>("read_session", { path: session.path });
       // use parseSession for both .json and .jsonl
       const parsed = parseSession(result.content, session.session_id, session.project, session.path);
       const currentConfigMd = getSessionConfigMd(parsed, claudeMd, geminiMd, codexMd);
@@ -109,8 +115,8 @@ export default function App() {
     setApplying(true);
     setApplyMsg(null);
     try {
-      const homeDir = await invoke<string>("get_home_dir").catch(() => "~");
-      const backupPath = await invoke<string>("write_config_md", {
+      const homeDir = await appInvoke<string>("get_home_dir").catch(() => "~");
+      const backupPath = await appInvoke<string>("write_config_md", {
         provider,
         content: suggestedContent,
         backupDir: `${homeDir}/.tokenscope/backups`,
@@ -125,7 +131,7 @@ export default function App() {
       
       // Re-analyze
       if (selected) {
-        const result = await invoke<ReadResult>("read_session", { path: selected.path });
+        const result = await appInvoke<ReadResult>("read_session", { path: selected.path });
         const parsed = parseSession(result.content, selected.session_id, selected.project, selected.path);
         const diag = analyzeSession(parsed, suggestedContent);
         const usageWindow = buildUsageWindowContext(diag, diagnostics);
@@ -145,16 +151,16 @@ export default function App() {
     setApplying(true);
     setApplyMsg(null);
     try {
-      await invoke("restore_backup", {
+      await appInvoke("restore_backup", {
         backupPath: lastBackup.path,
         provider: lastBackup.provider,
       });
 
       const restored = lastBackup.provider === "gemini"
-        ? await invoke<string>("read_gemini_md").catch(() => "")
+        ? await appInvoke<string>("read_gemini_md").catch(() => "")
         : lastBackup.provider === "codex"
-        ? await invoke<string>("read_codex_md").catch(() => "")
-        : await invoke<string>("read_claude_md").catch(() => "");
+        ? await appInvoke<string>("read_codex_md").catch(() => "")
+        : await appInvoke<string>("read_claude_md").catch(() => "");
 
       if (lastBackup.provider === "gemini") setGeminiMd(restored);
       else if (lastBackup.provider === "codex") setCodexMd(restored);
@@ -164,7 +170,7 @@ export default function App() {
       setLastBackup(null);
 
       if (selected) {
-        const result = await invoke<ReadResult>("read_session", { path: selected.path });
+        const result = await appInvoke<ReadResult>("read_session", { path: selected.path });
         const parsed = parseSession(result.content, selected.session_id, selected.project, selected.path);
         const diag = analyzeSession(parsed, restored);
         const usageWindow = buildUsageWindowContext(diag, diagnostics);
@@ -184,11 +190,27 @@ export default function App() {
         <div className="sidebar-header">
           <span>TokenScope</span>
         </div>
+        <nav className="sidebar-nav">
+          <button
+            className={`sidebar-nav-item${mainView === "scope" ? " active" : ""}`}
+            onClick={() => setMainView("scope")}
+          >
+            📊 조회
+          </button>
+          <button
+            className={`sidebar-nav-item${mainView === "qa" ? " active" : ""}`}
+            onClick={() => setMainView("qa")}
+          >
+            💬 질문 & 답변
+          </button>
+        </nav>
         <div className="sidebar-body">
           <SessionList
             sessions={sessions}
             selectedPath={selected?.path ?? null}
             onSelect={handleSelect}
+            providerFilter={providerFilter}
+            onProviderFilterChange={setProviderFilter}
             loading={loadingList}
             error={listError}
             diagnostics={diagnostics}
@@ -197,15 +219,19 @@ export default function App() {
       </aside>
 
       <main className="main">
-        {!selected && (
+        {mainView === "qa" && (
+          <ProviderQuestionPanel provider={providerFilter} />
+        )}
+
+        {mainView === "scope" && !selected && (
           <Dashboard diagnostics={diagnostics} />
         )}
 
-        {selected && analyzing && (
+        {mainView === "scope" && selected && analyzing && (
           <div className="empty"><span className="spinner" /></div>
         )}
 
-        {selected && !analyzing && diagnostic && (
+        {mainView === "scope" && selected && !analyzing && diagnostic && (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <button className="btn ghost" onClick={() => setSelected(null)}>← 대시보드로 돌아가기</button>
@@ -229,7 +255,7 @@ export default function App() {
             )}
 
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              {["summary", "conversation", "coach", "detail", "guide"].map(tab => (
+              {["summary", "conversation", "scope", "coach", "detail", "guide"].map(tab => (
                 <button
                   key={tab}
                   className={`btn ${activeTab === tab ? "active" : ""}`}
@@ -289,6 +315,10 @@ export default function App() {
               <PromptCoachPanel diagnostic={diagnostic} />
             )}
 
+            {activeTab === "scope" && (
+              <ScopeReview diagnostic={diagnostic} />
+            )}
+
             {activeTab === "guide" && (
               <QuestionGuide patterns={diagnostic.patterns} scoreBreakdown={diagnostic.scoreBreakdown} />
             )}
@@ -335,6 +365,7 @@ function getConfigLabel(provider: string): string {
 function getTabLabel(tab: string): string {
   if (tab === "summary") return "처방";
   if (tab === "conversation") return "대화 기록";
+  if (tab === "scope") return "스코프";
   if (tab === "coach") return "질문 코치";
   if (tab === "detail") return "상세";
   return "질문 가이드";

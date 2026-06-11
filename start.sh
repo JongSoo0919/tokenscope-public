@@ -10,22 +10,25 @@ RAG_LOG_FILE="$PID_DIR/rag.log"
 APP_LOG_FILE="$PID_DIR/tokenscope.log"
 ASK_REPL=false
 RUN_CLI=false
+WEB_MODE=false
 CLI_ARGS=()
 APP_ALREADY_RUNNING=false
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./start.sh [--ask] [--cli [cli args...]]
+  ./start.sh [--ask] [--web] [--cli [cli args...]]
 
 Options:
   --ask, --repl   RAG API와 앱을 띄운 뒤 Wiki 질문 REPL을 같은 터미널에서 실행합니다.
+  --web           Tauri 데스크톱 대신 브라우저용 웹 앱(Vite)을 실행합니다.
   --cli           앱 시작 전에 TokenScope CLI를 한 번 실행합니다.
                   인자가 없으면: list --provider cursor --limit 5
   --help          도움말을 출력합니다.
 
 Examples:
   ./start.sh
+  ./start.sh --web
   ./start.sh --ask
   ./start.sh --cli list --provider cursor --limit 5
   ./start.sh --ask --cli analyze --provider codex
@@ -36,6 +39,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --ask|--repl)
       ASK_REPL=true
+      shift
+      ;;
+    --web)
+      WEB_MODE=true
       shift
       ;;
     --cli)
@@ -126,8 +133,12 @@ else
   echo $! > "$RAG_PID_FILE"
 fi
 
-echo "[tokenscope] 앱 시작 중..."
-echo "[tokenscope] 첫 실행 시 Rust 컴파일로 3-5분 걸릴 수 있습니다."
+if [ "$WEB_MODE" = true ]; then
+  echo "[tokenscope-web] 웹 앱 시작 중: http://127.0.0.1:1420"
+else
+  echo "[tokenscope] 앱 시작 중..."
+  echo "[tokenscope] 첫 실행 시 Rust 컴파일로 3-5분 걸릴 수 있습니다."
+fi
 
 if [ -f "$APP_PID_FILE" ] && kill -0 "$(cat "$APP_PID_FILE")" 2>/dev/null; then
   echo "[tokenscope] 이미 실행 중: PID $(cat "$APP_PID_FILE")"
@@ -136,13 +147,20 @@ elif lsof -tiTCP:1420 -sTCP:LISTEN >/dev/null 2>&1; then
   echo "[tokenscope] 포트 1420이 이미 사용 중입니다. 기존 앱을 사용합니다."
   APP_ALREADY_RUNNING=true
 else
-  yarn tauri dev >"$APP_LOG_FILE" 2>&1 &
+  if [ "$WEB_MODE" = true ]; then
+    yarn dev --host 127.0.0.1 >"$APP_LOG_FILE" 2>&1 &
+  else
+    yarn tauri dev >"$APP_LOG_FILE" 2>&1 &
+  fi
   echo $! > "$APP_PID_FILE"
   echo "[tokenscope] PID $(cat "$APP_PID_FILE") 로 실행 중"
 fi
 
 echo "[tokenscope] 로그: $APP_LOG_FILE"
 echo "[rag] 로그: $RAG_LOG_FILE"
+if [ "$WEB_MODE" = true ]; then
+  echo "[tokenscope-web] 브라우저: http://127.0.0.1:1420"
+fi
 echo "[tokenscope] 종료하려면 ./stop.sh 또는 Ctrl+C"
 
 if [ "$ASK_REPL" = true ]; then
