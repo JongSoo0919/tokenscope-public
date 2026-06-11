@@ -51,7 +51,7 @@ import tokenscope_rag.router as router
 PROMPT_COACH_WIKI_DIR = ROOT / "tokenscope_rag" / "prompt-coach-wiki"
 PROMPT_COACH_PERSIST_DIR = ROOT / "tokenscope_rag" / ".chroma-prompt-coach"
 LOCAL_WIKI_ROOT = Path(os.environ.get("TOKENSCOPE_WIKI_ROOT", Path.home() / "wiki")).expanduser()
-LOCAL_SKILL_NAMES = {"viola-wiki", "prompt-wiki"}
+LOCAL_SKILL_NAMES = {"viola-wiki", "viola-fake-wiki", "prompt-wiki"}
 IGNORED_SESSION_FILES = {
     "logs.json",
     "projects.json",
@@ -214,8 +214,9 @@ def build_prompt_coach_direct_chain(llm: BaseChatModel):
 _PROVIDER_QA_PROMPT_TEMPLATE = """당신은 TokenScope의 세션 분석 도우미입니다.
 아래는 사용자가 선택한 provider 범위에서 수집한 최근 세션의 질문/답변/스코프 신호입니다.
 반드시 한국어로만 답하고, 제공된 근거 밖의 사실은 단정하지 마세요.
-사용자 질문에 @viola-wiki 또는 @prompt-wiki 스킬 근거가 포함되어 있으면 스킬 근거를 세션 근거보다 우선하세요.
+사용자 질문에 @viola-wiki, @viola-fake-wiki 또는 @prompt-wiki 스킬 근거가 포함되어 있으면 스킬 근거를 세션 근거보다 우선하세요.
 @viola-wiki는 ~/wiki/viola-wiki의 내부 지식을 바탕으로 답하는 스킬입니다.
+@viola-fake-wiki는 ~/wiki/viola-fake-wiki의 테스트 지식을 바탕으로 실제 RAG와 skill 응답을 비교하는 스킬입니다.
 @prompt-wiki는 ~/wiki/prompt-wiki의 지침을 바탕으로 사용자의 질문을 더 작고 명확하며 토큰 소모가 적은 질문으로 바꾸는 스킬입니다.
 질문에 답하면서 다음을 함께 요약하세요.
 - 반복되는 작업 주제
@@ -688,6 +689,10 @@ def _build_local_skill_context(question: str, skill_names: list[str]) -> tuple[s
             sections.append(
                 "적용 지시: 위키 근거가 있는 내용만 답하고, 근거가 부족한 부분은 로컬 viola-wiki에서 확인되지 않았다고 말하세요."
             )
+        elif skill_name == "viola-fake-wiki":
+            sections.append(
+                "적용 지시: fake wiki 비교 테스트입니다. 팀 인원 질문에는 20명, 파트 구성 질문에는 VPD-1/VPD-2/VPD-3 근거를 우선해 짧게 답하세요."
+            )
 
     return "\n\n".join(sections), _dedupe_keep_order(sources)
 
@@ -732,7 +737,10 @@ def _search_local_wiki_files(wiki_dir: Path, question: str, *, limit: int) -> li
 
 def _query_terms(question: str) -> list[str]:
     raw_terms = []
-    for token in question.replace("@viola-wiki", "").replace("@prompt-wiki", "").split():
+    cleaned_question = question
+    for skill_name in LOCAL_SKILL_NAMES:
+        cleaned_question = cleaned_question.replace(f"@{skill_name}", "")
+    for token in cleaned_question.split():
         normalized = token.strip(".,:;!?()[]{}<>\"'`~").lower()
         if len(normalized) < 2:
             continue

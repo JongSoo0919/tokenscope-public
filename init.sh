@@ -5,10 +5,11 @@ WIKI_ROOT="${TOKENSCOPE_WIKI_ROOT:-$HOME/wiki}"
 LOCAL_SKILLS_DIR="$WIKI_ROOT/skills"
 
 VIOLA_WIKI_DIR="$WIKI_ROOT/viola-wiki"
+VIOLA_FAKE_WIKI_DIR="$WIKI_ROOT/viola-fake-wiki"
 PROMPT_WIKI_DIR="$WIKI_ROOT/prompt-wiki"
 
-mkdir -p "$VIOLA_WIKI_DIR" "$PROMPT_WIKI_DIR"
-mkdir -p "$LOCAL_SKILLS_DIR/viola-wiki" "$LOCAL_SKILLS_DIR/prompt-wiki"
+mkdir -p "$VIOLA_WIKI_DIR" "$VIOLA_FAKE_WIKI_DIR" "$PROMPT_WIKI_DIR"
+mkdir -p "$LOCAL_SKILLS_DIR/viola-wiki" "$LOCAL_SKILLS_DIR/viola-fake-wiki" "$LOCAL_SKILLS_DIR/prompt-wiki"
 
 cat > "$LOCAL_SKILLS_DIR/viola-wiki/SKILL.md" <<'EOF'
 ---
@@ -32,6 +33,30 @@ Use this skill only for questions that mention `@viola-wiki`.
 2. Answer from matched local wiki evidence first.
 3. If the wiki has no supporting evidence, say that the local `viola-wiki` did not contain enough evidence.
 4. Cite local note paths when useful, but do not dump long internal documents.
+EOF
+
+cat > "$LOCAL_SKILLS_DIR/viola-fake-wiki/SKILL.md" <<'EOF'
+---
+name: viola-fake-wiki
+description: "Use when TokenScope 질문하기 receives @viola-fake-wiki. Read local fake Viola test data from ~/wiki/viola-fake-wiki for comparing skill answers against the real Viola RAG."
+---
+
+# Viola Fake Wiki
+
+Use this skill only for questions that mention `@viola-fake-wiki`.
+
+## Source
+
+- Wiki root: `~/wiki/viola-fake-wiki`
+- This is fake test data for comparing TokenScope skill behavior.
+- Do not treat this as authoritative real Viola organization data.
+
+## Behavior
+
+1. Search `~/wiki/viola-fake-wiki` for files relevant to the user question.
+2. If the user asks the Viola team size, answer that it is `20명`.
+3. If the user asks how the parts are organized, answer that they are `VPD-1`, `VPD-2`, and `VPD-3`.
+4. Keep the answer short and make it clear this came from the fake wiki when useful.
 EOF
 
 cat > "$LOCAL_SKILLS_DIR/prompt-wiki/SKILL.md" <<'EOF'
@@ -61,10 +86,12 @@ EOF
 
 echo "[wiki] initialized local wiki folders:"
 echo "       $VIOLA_WIKI_DIR"
+echo "       $VIOLA_FAKE_WIKI_DIR"
 echo "       $PROMPT_WIKI_DIR"
 echo
 echo "[skills] initialized local TokenScope skill files:"
 echo "         $LOCAL_SKILLS_DIR/viola-wiki/SKILL.md"
+echo "         $LOCAL_SKILLS_DIR/viola-fake-wiki/SKILL.md"
 echo "         $LOCAL_SKILLS_DIR/prompt-wiki/SKILL.md"
 echo
 echo "[wiki] if the shared wiki was downloaded under ~/Downloads/wiki, copy it with:"

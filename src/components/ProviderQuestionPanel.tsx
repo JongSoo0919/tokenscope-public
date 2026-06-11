@@ -73,7 +73,7 @@ export function ProviderQuestionPanel({ provider }: Props) {
         현재 선택된 범위: <strong style={{ color: "var(--text)" }}>{scopeLabel}</strong>. 이 범위의 세션 질문과 답변, 스코프 신호를 기준으로 물어볼 수 있습니다.
       </div>
       <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55, marginBottom: 10 }}>
-        로컬 스킬: <code>@viola-wiki</code>는 <code>~/wiki/viola-wiki</code> 근거로 답하고, <code>@prompt-wiki</code>는 <code>~/wiki/prompt-wiki</code> 기준으로 질문을 더 작게 고칩니다.
+        로컬 스킬: <code>@viola-wiki</code>는 실제 위키, <code>@viola-fake-wiki</code>는 테스트 위키, <code>@prompt-wiki</code>는 질문 개선 기준을 읽습니다.
       </div>
 
       <textarea
