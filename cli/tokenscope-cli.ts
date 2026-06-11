@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -292,8 +293,7 @@ function readCursorStoreAsJsonl(path: string): string {
   const meta = readCursorMeta(path);
   if (meta) lines.push(JSON.stringify({ type: "cursor_meta", payload: meta }));
 
-  const rows = sqlite(path, "select id, hex(data) from blobs");
-  for (const row of rows.split("\n")) {
+  for (const row of iterateCursorBlobRows(path)) {
     const [id, hex] = splitFirst(row, "|");
     if (!id || !hex) continue;
 
@@ -310,6 +310,23 @@ function readCursorStoreAsJsonl(path: string): string {
 
   if (lines.length <= 1) fail(`Cursor store did not contain readable message blobs: ${path}`);
   return lines.join("\n");
+}
+
+function* iterateCursorBlobRows(path: string, batchSize = 10): Generator<string> {
+  let offset = 0;
+  while (true) {
+    const rows = sqlite(
+      path,
+      `select id, hex(data) from blobs limit ${batchSize} offset ${offset}`,
+    );
+    const batch = rows.split("\n").map(line => line.trim()).filter(Boolean);
+    if (batch.length === 0) break;
+
+    for (const row of batch) yield row;
+
+    if (batch.length < batchSize) break;
+    offset += batchSize;
+  }
 }
 
 function readCursorMeta(path: string): unknown | null {
@@ -676,11 +693,22 @@ function codexHasVisibleUserTurn(path: string): boolean {
 }
 
 function sqlite(path: string, sql: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "tokenscope-sqlite-"));
+  const outfile = join(dir, "out.txt");
+
   try {
-    return execFileSync("sqlite3", ["-readonly", path, sql], { encoding: "utf8", maxBuffer: 1024 * 1024 * 64 });
+    const command = `sqlite3 -readonly ${shellQuote(path)} ${shellQuote(sql)} > ${shellQuote(outfile)}`;
+    execSync(command, { stdio: ["ignore", "ignore", "pipe"], maxBuffer: 1024 * 1024 });
+    return readFileSync(outfile, "utf8");
   } catch (error) {
     throw new Error(`sqlite3 failed for ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function safeReadDir(path: string): string[] {

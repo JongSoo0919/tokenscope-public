@@ -12,6 +12,11 @@ APP_LOG_FILE="$PID_DIR/tokenscope.log"
 cd "$SCRIPT_DIR"
 mkdir -p "$PID_DIR"
 
+if [ ! -f "$RAG_DIR/requirements-ollama.txt" ]; then
+  echo "[rag] 서브모듈 초기화 중..."
+  git submodule update --init --recursive rag
+fi
+
 # Rust toolchain
 if [ -f "$HOME/.cargo/env" ]; then
   source "$HOME/.cargo/env"

@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(serde::Serialize)]
 pub struct SessionFile {
@@ -329,46 +330,55 @@ fn read_cursor_store_as_jsonl(path: &Path) -> Result<String, String> {
         );
     }
 
-    let output = Command::new("sqlite3")
-        .arg("-readonly")
-        .arg(path)
-        .arg("select id, hex(data) from blobs")
-        .output()
-        .map_err(|e| format!("Failed to run sqlite3 for Cursor store: {}", e))?;
+    let batch_size = 10;
+    let mut offset = 0;
 
-    if !output.status.success() {
-        return Err(format!(
-            "sqlite3 failed for Cursor store: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
+    loop {
+        let sql = format!(
+            "select id, hex(data) from blobs limit {} offset {}",
+            batch_size, offset
+        );
+        let stdout = run_sqlite_query(path, &sql)?;
+        let mut batch_count = 0;
+        for row in stdout.lines() {
+            if row.trim().is_empty() {
+                continue;
+            }
+            batch_count += 1;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for row in stdout.lines() {
-        let Some((id, hex)) = row.split_once('|') else {
-            continue;
-        };
-        let Ok(bytes) = decode_hex(hex.trim()) else {
-            continue;
-        };
-        let Ok(text) = String::from_utf8(bytes) else {
-            continue;
-        };
-        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        if !payload.get("role").is_some() {
-            continue;
+            let Some((id, hex)) = row.split_once('|') else {
+                continue;
+            };
+            let Ok(bytes) = decode_hex(hex.trim()) else {
+                continue;
+            };
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if !payload.get("role").is_some() {
+                continue;
+            }
+
+            lines.push(
+                serde_json::json!({
+                    "type": "cursor_message",
+                    "id": id,
+                    "payload": payload,
+                })
+                .to_string(),
+            );
         }
 
-        lines.push(
-            serde_json::json!({
-                "type": "cursor_message",
-                "id": id,
-                "payload": payload,
-            })
-            .to_string(),
-        );
+        if batch_count == 0 {
+            break;
+        }
+        if batch_count < batch_size {
+            break;
+        }
+        offset += batch_size;
     }
 
     if lines.len() <= 1 {
@@ -379,18 +389,9 @@ fn read_cursor_store_as_jsonl(path: &Path) -> Result<String, String> {
 }
 
 fn read_cursor_meta(path: &Path) -> Result<serde_json::Value, String> {
-    let output = Command::new("sqlite3")
-        .arg("-readonly")
-        .arg(path)
-        .arg("select value from meta where key = '0' limit 1")
-        .output()
-        .map_err(|e| format!("Failed to read Cursor metadata: {}", e))?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let raw = run_sqlite_query(path, "select value from meta where key = '0' limit 1")?
+        .trim()
+        .to_string();
     if raw.is_empty() {
         return Err("Cursor metadata missing".to_string());
     }
@@ -405,6 +406,42 @@ fn read_cursor_meta(path: &Path) -> Result<serde_json::Value, String> {
     };
 
     serde_json::from_str::<serde_json::Value>(&decoded).map_err(|e| e.to_string())
+}
+
+fn run_sqlite_query(path: &Path, sql: &str) -> Result<String, String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("tokenscope-sqlite-{stamp}"));
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let outfile = dir.join("out.txt");
+
+    let command = format!(
+        "sqlite3 -readonly {} {} > {}",
+        shell_quote(&path.to_string_lossy()),
+        shell_quote(sql),
+        shell_quote(&outfile.to_string_lossy())
+    );
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .status()
+        .map_err(|e| format!("Failed to run sqlite3 for Cursor store: {}", e))?;
+
+    let result = if status.success() {
+        fs::read_to_string(&outfile).map_err(|e| e.to_string())
+    } else {
+        Err("sqlite3 failed for Cursor store".to_string())
+    };
+
+    let _ = fs::remove_dir_all(&dir);
+    result
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {

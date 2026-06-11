@@ -6,7 +6,9 @@ TokenScope는 React/Vite 프론트엔드, Tauri v2 Rust 데스크톱 셸, Python
 
 - `src/`: React UI와 TypeScript 도메인 로직입니다. `components/`는 화면과 패널, `lib/`는 파서, 분석기, 프롬프트 코치, 처방 로직을 담습니다.
 - `src-tauri/`: Tauri Rust 앱, 파일 시스템 명령, 권한 설정, 아이콘, Cargo 설정이 있습니다.
-- `rag/`: RAG API 서버입니다. 소스는 `rag/src/`, 프롬프트 코치 지식은 `rag/prompt-coach-wiki/`, 샘플 위키는 `rag/wiki/`에 있습니다.
+- `rag/`: 범용 RAG 서브모듈(`viola-langchain`)입니다. 소스는 `rag/src/`, 샘플 위키는 `rag/wiki/`에 있습니다.
+- `tokenscope_rag/`: TokenScope 전용 RAG wrapper(`api.py`), 질문 코치 위키, `ask.sh`가 있습니다.
+- `cli/`: 데스크톱 앱 없이 세션을 분석하는 TokenScope CLI입니다.
 - `dogfood/`: 제품 검증용 로컬 세션 예시와 리뷰 자료를 둡니다.
 - `start.sh`, `stop.sh`: RAG API와 Tauri 개발 앱을 함께 실행/종료합니다.
 
@@ -20,7 +22,8 @@ TokenScope는 React/Vite 프론트엔드, Tauri v2 Rust 데스크톱 셸, Python
 - `yarn dev`: Vite 프론트엔드만 실행합니다.
 - `yarn tauri dev`: Tauri 데스크톱 앱을 개발 모드로 실행합니다.
 - `yarn build`: TypeScript 검사를 수행하고 Vite 프론트엔드를 빌드합니다.
-- `cd rag && .venv/bin/uvicorn src.api:app --reload --host 127.0.0.1 --port 8000`: RAG API만 직접 실행합니다.
+- `rag/.venv/bin/uvicorn tokenscope_rag.api:app --reload --host 127.0.0.1 --port 8000`: RAG API만 직접 실행합니다.
+- `yarn cli list --provider cursor --limit 5`: CLI로 Cursor 세션 진단 대시보드를 봅니다.
 
 필수 환경은 Node.js 18+, Yarn, Rust/Cargo stable, Python 3.10+, README에 적힌 Ollama 모델입니다.
 
