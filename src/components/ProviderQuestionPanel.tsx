@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { requestProviderQa, requestProviderQaHistory, ProviderQaHistoryItem, ProviderScope } from "../lib/providerQa";
+import { requestProviderQa, requestProviderQaHistory } from "../lib/providerQa";
+import type { ProviderQaHistoryItem, ProviderScope } from "../lib/providerQa";
 
 interface Props {
   provider: ProviderScope;
@@ -13,6 +14,7 @@ export function ProviderQuestionPanel({ provider }: Props) {
   const [scopeSummary, setScopeSummary] = useState("");
   const [history, setHistory] = useState<ProviderQaHistoryItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,6 +40,20 @@ export function ProviderQuestionPanel({ provider }: Props) {
     void loadHistory();
   }, [provider]);
 
+  useEffect(() => {
+    if (!loading) {
+      setElapsedSeconds(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.max(1, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
   const run = async () => {
     const trimmed = question.trim();
     if (!trimmed) {
@@ -60,7 +76,7 @@ export function ProviderQuestionPanel({ provider }: Props) {
       setScopeSummary(response.scope_summary ?? "");
       void loadHistory();
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -97,10 +113,12 @@ export function ProviderQuestionPanel({ provider }: Props) {
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: "var(--muted)" }}>
-          질문 범위: {scopeLabel} · 참고 근거 {sessionsUsed}개
+          {loading
+            ? `로컬 LLM 답변 생성 중 · ${elapsedSeconds || 1}초 경과 · 오래 걸릴 수 있습니다`
+            : `질문 범위: ${scopeLabel} · 참고 근거 ${sessionsUsed}개`}
         </div>
         <button className="btn active" onClick={run} disabled={loading}>
-          {loading ? "질문 중..." : "질문하기"}
+          {loading ? `질문 중... ${elapsedSeconds || 1}s` : "질문하기"}
         </button>
       </div>
 
