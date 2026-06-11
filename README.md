@@ -60,6 +60,12 @@ TokenScope가 사용자가 바로 답하게 하려는 질문은 네 가지입니
 
 ### 설치 및 실행
 
+이 저장소는 RAG 백엔드를 Git 서브모듈로 사용합니다. 처음 클론한 뒤에는 서브모듈을 먼저 초기화하세요.
+
+```bash
+git submodule update --init --recursive
+```
+
 ```bash
 ./start.sh
 ```
@@ -72,14 +78,24 @@ TokenScope가 사용자가 바로 답하게 하려는 질문은 네 가지입니
 
 TokenScope는 `http://127.0.0.1:8000/coach-prompt`로 현재 세션 요약, 감지된 낭비 패턴, 최근 사용자 메시지 또는 질문 초안을 보내고 질문 개선안을 받아옵니다.
 
-### 질문 코치 RAG
+### RAG 서브모듈과 TokenScope 코치
 
-RAG 백엔드는 이 저장소의 `rag/` 하위에 포함되어 있습니다.
+범용 RAG 백엔드는 `rag/` 경로의 `yanapang/viola-langchain` 서브모듈입니다. TokenScope 전용 질문 코치 API와 코칭 지식은 이 저장소의 `tokenscope_rag/`에 둡니다.
 
-- `rag/wiki`: 일반 RAG 샘플 위키
-- `rag/prompt-coach-wiki`: 질문 리팩토링과 토큰 절약 코칭 지식
+upstream RAG 변경분을 반영하려면 다음 명령으로 서브모듈 포인터를 갱신한 뒤 커밋하세요.
+
+```bash
+git submodule update --remote rag
+git add rag
+git commit -m "chore: update rag submodule"
+```
+
+- `rag/wiki`: RAG 샘플 위키
 - `rag/.env.example`: 로컬 모델과 인덱스 설정
-- `rag/.chroma`, `rag/.chroma-prompt-coach`: 실행 중 생성되는 로컬 벡터 DB
+- `rag/.chroma`: 실행 중 생성되는 로컬 벡터 DB
+- `tokenscope_rag/api.py`: `/coach-prompt`를 포함한 TokenScope 전용 RAG wrapper
+- `tokenscope_rag/prompt-coach-wiki`: 질문 리팩토링과 토큰 절약 코칭 지식
+- `tokenscope_rag/.chroma-prompt-coach`: 실행 중 생성되는 질문 코치 벡터 DB
 
 ### 빌드
 
