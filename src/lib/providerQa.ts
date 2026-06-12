@@ -23,11 +23,12 @@ export interface ProviderQaHistoryItem {
   scope_summary: string;
 }
 
-export async function requestProviderQa(payload: ProviderQaRequest): Promise<ProviderQaResponse> {
+export async function requestProviderQa(payload: ProviderQaRequest, signal?: AbortSignal): Promise<ProviderQaResponse> {
   const response = await fetch("http://127.0.0.1:8000/tokenscope/provider-qa", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   });
 
   if (!response.ok) {
