@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { requestProviderQa, requestProviderQaHistory } from "../lib/providerQa";
 import type { ProviderQaHistoryItem, ProviderScope } from "../lib/providerQa";
 
@@ -17,6 +17,7 @@ export function ProviderQuestionPanel({ provider }: Props) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const scopeLabel = useMemo(() => {
     if (provider === "all") return "전체 provider";
@@ -41,6 +42,10 @@ export function ProviderQuestionPanel({ provider }: Props) {
   }, [provider]);
 
   useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
     if (!loading) {
       setElapsedSeconds(0);
       return;
@@ -55,11 +60,16 @@ export function ProviderQuestionPanel({ provider }: Props) {
   }, [loading]);
 
   const run = async () => {
+    if (loading) return;
+
     const trimmed = question.trim();
     if (!trimmed) {
       setError("질문을 입력하세요.");
       return;
     }
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     setLoading(true);
     setError(null);
@@ -69,16 +79,32 @@ export function ProviderQuestionPanel({ provider }: Props) {
     setScopeSummary("");
 
     try {
-      const response = await requestProviderQa({ provider, question: trimmed });
+      const response = await requestProviderQa({ provider, question: trimmed }, controller.signal);
       setAnswer(response.answer);
       setSources(response.sources ?? []);
       setSessionsUsed(response.sessions_used ?? 0);
       setScopeSummary(response.scope_summary ?? "");
       void loadHistory();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+        setError("질문을 멈췄습니다.");
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
+    }
+  };
+
+  const stop = () => {
+    abortRef.current?.abort();
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      void run();
     }
   };
 
@@ -95,6 +121,7 @@ export function ProviderQuestionPanel({ provider }: Props) {
       <textarea
         value={question}
         onChange={event => setQuestion(event.target.value)}
+        onKeyDown={handleKeyDown}
         placeholder={`@prompt-wiki ${scopeLabel} 범위에서 다음 질문을 어떻게 바꾸면 좋을지 알려줘`}
         style={{
           width: "100%",
@@ -115,11 +142,18 @@ export function ProviderQuestionPanel({ provider }: Props) {
         <div style={{ fontSize: 11, color: "var(--muted)" }}>
           {loading
             ? `로컬 LLM 답변 생성 중 · ${elapsedSeconds || 1}초 경과 · 오래 걸릴 수 있습니다`
-            : `질문 범위: ${scopeLabel} · 참고 근거 ${sessionsUsed}개`}
+            : `질문 범위: ${scopeLabel} · 참고 근거 ${sessionsUsed}개 · Enter 전송 · Shift+Enter 줄바꿈`}
         </div>
-        <button className="btn active" onClick={run} disabled={loading}>
-          {loading ? `질문 중... ${elapsedSeconds || 1}s` : "질문하기"}
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {loading && (
+            <button className="btn ghost" onClick={stop}>
+              멈추기
+            </button>
+          )}
+          <button className="btn active" onClick={() => void run()} disabled={loading}>
+            {loading ? `질문 중... ${elapsedSeconds || 1}s` : "질문하기"}
+          </button>
+        </div>
       </div>
 
       {error && (
